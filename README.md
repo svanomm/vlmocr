@@ -1,6 +1,15 @@
 # vlmocr
 
-`vlmocr` is a standalone OCR package for rendering PDFs, sending page images to OpenRouter-served VLMs, validating the raw OCR contract, and converting the results into cleaned Markdown and cleaned JSON.
+`vlmocr` turns PDFs into clean, reusable text files.
+
+In plain terms: it takes a PDF, renders each page as an image, asks a vision-language model (VLM) to read the page, and then saves the result as:
+
+- Markdown for humans to read and edit
+- JSON for scripts, pipelines, or downstream tools
+
+This repo is useful when you have scanned papers, reports, manuals, or image-heavy PDFs that are hard to search, copy from, or repurpose.
+
+Under the hood, `vlmocr` sends page images to OpenRouter-served VLMs, validates the raw OCR contract, and converts the results into cleaned Markdown and cleaned JSON. We currently use Gemini 3.1 Flash Lite for OCR based on its very high performance on (socOCRBench)[https://noahdasanaike.github.io/posts/sococrbench.html] and cost effectiveness. With current API pricing, I am seeing an average of around **$1.50 per 1000 pages** of OCR.
 
 It preserves the external interface expected by downstream consumers:
 
@@ -11,6 +20,104 @@ It preserves the external interface expected by downstream consumers:
 - `vlmocr estimate-cost`
 
 The frozen compatibility details live in [OCR_SPINOUT_CONTRACT.md](OCR_SPINOUT_CONTRACT.md).
+
+## What OCR means
+
+OCR stands for "optical character recognition." It is the process of turning text that appears inside an image or scanned document into actual machine-readable text.
+
+Without OCR, a PDF scan is often just a stack of pictures. You can look at it, but searching it, copying from it, or feeding it into another tool is unreliable or impossible.
+
+With OCR, the same document becomes much more useful:
+
+- text can be searched
+- sections can be copied and edited
+- tables and headings can be preserved in a structured format
+- downstream tools can process the content automatically
+
+## Why this project uses VLMs for OCR
+
+Traditional OCR systems are usually strongest at reading plain text characters on clean, simple pages. They can work well for straightforward scans, but they often struggle when a page includes things like:
+
+- multi-column layouts
+- tables
+- footnotes
+- charts, diagrams, or figures
+- mixed formatting such as headings, bold text, code, or math
+
+VLMs are often better for this kind of document OCR because they do not only identify characters one by one. They also look at the whole page and reason about layout and meaning.
+
+That tends to make them better at:
+
+- preserving reading order
+- recognizing headings and document structure
+- reconstructing tables in Markdown
+- describing non-text visuals such as figures and charts
+- keeping footnotes connected to the places where they are referenced
+
+That does not mean VLMs are always better in every situation. They are usually slower than traditional OCR and they cost API money to run. But for messy, complex, or highly structured documents, they often produce output that needs much less manual cleanup afterward. That tradeoff is the main reason this repo is built around VLM-based OCR.
+
+## Markdown conventions used by this repo
+
+The OCR prompt in this repo asks the model to produce Markdown, but it also asks for a few extra tags so the output keeps document structure that plain Markdown would otherwise lose.
+
+### Footnote tagging
+
+Inline footnote references are wrapped like this:
+
+```md
+The sample was preserved at low temperature <ref num="1"/>.
+```
+
+The matching footnote text is wrapped like this:
+
+```md
+<note num="1">Stored at 4 C until analysis.</note>
+```
+
+This is useful because it keeps a clear machine-readable connection between the footnote marker in the main text and the footnote content itself.
+
+That helps with:
+
+- preserving citations and notes during cleanup
+- making downstream parsing simpler and more reliable
+- avoiding guesswork when a document has many repeated footnote numbers or dense page layouts
+
+By default, `vlmocr convert` expands those references inline so the cleaned Markdown becomes easier for non-technical readers and text-processing tools to follow, for example:
+
+```md
+The sample was preserved at low temperature [Footnote 1: Stored at 4 C until analysis].
+```
+
+If you want to keep the original `<ref>` and `<note>` tags instead, use `--no-inject-footnotes`.
+
+### Figure descriptions
+
+When a page contains a figure, chart, diagram, or other non-text visual, the model is asked to describe it inside `<image>` tags:
+
+```md
+<image>Bar chart comparing quarterly revenue across four regions; the west region is highest in Q3 and Q4.</image>
+```
+
+This is useful because normal OCR only captures visible text. It usually does not preserve what a chart, figure, or diagram actually shows.
+
+The figure-description convention helps by:
+
+- keeping important visual meaning in a text-only output format
+- making the converted document more searchable
+- improving accessibility for readers who cannot inspect the original image easily
+- giving downstream LLM or indexing workflows more context about the page
+
+Figure captions are still preserved as ordinary text, so you keep both the original caption and a structured description of the visual content.
+
+## What the cleaned output is for
+
+After OCR runs, `vlmocr convert` cleans the raw output and writes:
+
+- Markdown files for reading, editing, and search
+- page-level JSON for accurate retrieval citations (e.g. you can provide specific page citations) 
+- a headings-only Markdown table of contents file for quick navigation
+
+The goal is not only to extract text, but to preserve as much of the document's structure and meaning as possible in formats that are easy to reuse.
 
 ## Requirements
 

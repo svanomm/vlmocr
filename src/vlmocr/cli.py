@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import os
+import re
+import shutil
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -19,6 +22,167 @@ from vlmocr.contract import (
 
 InputFunc = Callable[[str], str]
 OutputFunc = Callable[[str], None]
+
+MENU_MIN_WIDTH = 68
+MENU_MAX_WIDTH = 94
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+_ANSI_RESET = "\033[0m"
+
+_LOGO_LINES = (
+    r"  _   ____   __  ___  ____  ________ ",
+    r" | | / / /  /  |/  / / __ \/ ___/ _ \\",
+    r" | |/ / /__/ /|_/ / / /_/ / /__/ , _/",
+    r" |___/____/_/  /_/  \____/\___/_/|_| ",
+    r"                                     ",
+)
+
+
+def _supports_ansi(output_fn: OutputFunc) -> bool:
+    if output_fn is not print:
+        return False
+
+    if os.environ.get("NO_COLOR"):
+        return False
+
+    stream = getattr(sys, "stdout", None)
+    return bool(stream and stream.isatty())
+
+
+def _style(text: str, *codes: str, enabled: bool) -> str:
+    if not enabled or not codes:
+        return text
+
+    return f"\033[{';'.join(codes)}m{text}{_ANSI_RESET}"
+
+
+def _visible_len(text: str) -> int:
+    return len(_ANSI_RE.sub("", text))
+
+
+def _menu_width() -> int:
+    columns = shutil.get_terminal_size((MENU_MAX_WIDTH, 24)).columns
+    return max(MENU_MIN_WIDTH, min(MENU_MAX_WIDTH, columns - 2))
+
+
+def _center_text(text: str, width: int) -> str:
+    visible_width = _visible_len(text)
+    if visible_width >= width:
+        return text
+
+    padding = width - visible_width
+    left = padding // 2
+    right = padding - left
+    return f"{' ' * left}{text}{' ' * right}"
+
+
+def _truncate_text(text: str, width: int) -> str:
+    if _visible_len(text) <= width:
+        return text
+
+    if width <= 3:
+        return text[:width]
+
+    return f"{text[: width - 3]}..."
+
+
+def _pad_visible_right(text: str, width: int) -> str:
+    visible_width = _visible_len(text)
+    if visible_width >= width:
+        return text
+
+    return f"{text}{' ' * (width - visible_width)}"
+
+
+def _render_panel(
+    title: str,
+    lines: Sequence[str],
+    *,
+    ansi_enabled: bool,
+    border_color: str = "38;5;67",
+    title_color: str = "1;38;5;123",
+) -> str:
+    width = _menu_width()
+    inner_width = width - 4
+    title_text = f" {title} " if title else ""
+    dash_count = max(0, width - 2 - len(title_text))
+    if ansi_enabled and title:
+        top = "".join(
+            [
+                _style("+", border_color, enabled=True),
+                _style(title_text, title_color, enabled=True),
+                _style(f"{'-' * dash_count}+", border_color, enabled=True),
+            ]
+        )
+    else:
+        top = _style(
+            f"+{title_text}{'-' * dash_count}+",
+            border_color,
+            enabled=ansi_enabled,
+        )
+    bottom = f"+{'-' * (width - 2)}+"
+    rendered_lines = [top]
+
+    for line in lines:
+        clipped = _truncate_text(line, inner_width)
+        rendered_lines.append(
+            _style(
+                f"| {_pad_visible_right(clipped, inner_width)} |",
+                border_color,
+                enabled=ansi_enabled,
+            )
+        )
+
+    rendered_lines.append(_style(bottom, border_color, enabled=ansi_enabled))
+    return "\n".join(rendered_lines)
+
+
+def _render_logo(*, ansi_enabled: bool) -> str:
+    width = _menu_width() - 4
+    colors = ("1;38;5;45", "1;38;5;81", "1;38;5;117", "1;38;5;153", "1;38;5;189")
+    lines = [
+        _style(_center_text(line, width), color, enabled=ansi_enabled)
+        for line, color in zip(_LOGO_LINES, colors, strict=True)
+    ]
+    lines.append("")
+    lines.append(
+        _style(
+            _center_text("interactive launcher for docs -> OCR -> markdown", width),
+            "38;5;145",
+            enabled=ansi_enabled,
+        )
+    )
+    return _render_panel("vlmocr", lines, ansi_enabled=ansi_enabled, border_color="38;5;75")
+
+
+def _render_menu(*, ansi_enabled: bool) -> str:
+    docs_line = f"docs    {DEFAULT_DOCS_DIR}"
+    out_line = f"output  {DEFAULT_OUT_DIR}"
+    menu_lines = [
+        "mission control",
+        "",
+        docs_line,
+        out_line,
+        "",
+        "[1] Init project structure",
+        "[2] Run OCR on PDFs",
+        "[3] Convert raw OCR JSON",
+        "[4] Validate current structure",
+        "[5] Show quickstart",
+        "[6] Quit",
+        "",
+        "tip: press Ctrl+C at any prompt to leave the launcher.",
+    ]
+    return _render_panel(
+        "interactive launcher",
+        menu_lines,
+        ansi_enabled=ansi_enabled,
+        border_color="38;5;66",
+        title_color="1;38;5;153",
+    )
+
+
+def _render_status_message(message: str, *, ansi_enabled: bool) -> str:
+    return _style(message, "38;5;180", enabled=ansi_enabled)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -361,24 +525,20 @@ def launch_tui(
     output_fn: OutputFunc = print,
 ) -> None:
     """Launch an interactive terminal menu for new and occasional users."""
+    ansi_enabled = _supports_ansi(output_fn)
+
+    output_fn("")
+    output_fn(_render_logo(ansi_enabled=ansi_enabled))
+
     while True:
         output_fn("")
-        output_fn("vlmocr interactive launcher")
-        output_fn("---------------------------")
-        output_fn(f"docs: {DEFAULT_DOCS_DIR}")
-        output_fn(f"out : {DEFAULT_OUT_DIR}")
-        output_fn("1. Init project structure")
-        output_fn("2. Run OCR on PDFs")
-        output_fn("3. Convert raw OCR JSON")
-        output_fn("4. Validate current structure")
-        output_fn("5. Show quickstart")
-        output_fn("6. Quit")
+        output_fn(_render_menu(ansi_enabled=ansi_enabled))
 
         try:
             choice = input_fn("Select an option [1-6]: ").strip()
         except (EOFError, KeyboardInterrupt):
             output_fn("")
-            output_fn("Exiting vlmocr.")
+            output_fn(_render_status_message("Exiting vlmocr.", ansi_enabled=ansi_enabled))
             return
 
         if choice == "1":
@@ -444,14 +604,19 @@ def launch_tui(
             continue
 
         if choice == "6":
-            output_fn("Exiting vlmocr.")
+            output_fn(_render_status_message("Exiting vlmocr.", ansi_enabled=ansi_enabled))
             return
 
         if choice in {"q", "quit", "exit"}:
-            output_fn("Exiting vlmocr.")
+            output_fn(_render_status_message("Exiting vlmocr.", ansi_enabled=ansi_enabled))
             return
 
-        output_fn("Please choose a menu option from 1 to 6.")
+        output_fn(
+            _render_status_message(
+                "Please choose a menu option from 1 to 6.",
+                ansi_enabled=ansi_enabled,
+            )
+        )
 
 
 def main(argv: Sequence[str] | None = None) -> None:
