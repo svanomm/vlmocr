@@ -9,7 +9,7 @@ In plain terms: it takes a PDF, renders each page as an image, asks a vision-lan
 
 This repo is useful when you have scanned papers, reports, manuals, or image-heavy PDFs that are hard to search, copy from, or repurpose.
 
-Under the hood, `vlmocr` sends page images to OpenRouter-served VLMs, validates the raw OCR contract, and converts the results into cleaned Markdown and cleaned JSON. We currently use Gemini 3.1 Flash Lite for OCR based on its very high performance on (socOCRBench)[https://noahdasanaike.github.io/posts/sococrbench.html] and cost effectiveness. With current API pricing, I am seeing an average of around **$1.50 per 1000 pages** of OCR.
+Under the hood, `vlmocr` sends page images to OpenRouter-served VLMs, validates the raw OCR contract, and converts the results into cleaned Markdown and cleaned JSON. We currently use Gemini 3.1 Flash Lite for OCR based on its very high performance on [socOCRBench](https://noahdasanaike.github.io/posts/sococrbench.html) and cost effectiveness. With current API pricing, I am seeing an average of around **$1.50 per 1000 pages** of OCR.
 
 ## What OCR means
 
@@ -266,3 +266,6 @@ uv run pytest
 
 - OCR cost estimation is intentionally OCR-only.
 - Repeated-line cleanup is optional and is designed to avoid over-removing lines in smaller documents.
+
+## License
+MIT License.
