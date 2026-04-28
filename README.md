@@ -11,16 +11,6 @@ This repo is useful when you have scanned papers, reports, manuals, or image-hea
 
 Under the hood, `vlmocr` sends page images to OpenRouter-served VLMs, validates the raw OCR contract, and converts the results into cleaned Markdown and cleaned JSON. We currently use Gemini 3.1 Flash Lite for OCR based on its very high performance on (socOCRBench)[https://noahdasanaike.github.io/posts/sococrbench.html] and cost effectiveness. With current API pricing, I am seeing an average of around **$1.50 per 1000 pages** of OCR.
 
-It preserves the external interface expected by downstream consumers:
-
-- `vlmocr`
-- `vlmocr init`
-- `vlmocr ocr`
-- `vlmocr convert`
-- `vlmocr estimate-cost`
-
-The frozen compatibility details live in [OCR_SPINOUT_CONTRACT.md](OCR_SPINOUT_CONTRACT.md).
-
 ## What OCR means
 
 OCR stands for "optical character recognition." It is the process of turning text that appears inside an image or scanned document into actual machine-readable text.
