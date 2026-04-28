@@ -62,6 +62,39 @@ def test_clean_file_removes_frequent_lines_when_enabled(tmp_path: Path) -> None:
     assert all(repeated_line not in page["markdown"] for page in data["pages"])
 
 
+def test_clean_file_does_not_over_remove_small_documents(tmp_path: Path) -> None:
+    """Small documents should keep repeated lines even when cleanup is enabled."""
+    repeated_line = "Company Confidential"
+    raw_json_path = tmp_path / "raw.json"
+    out_dir = tmp_path / "converted"
+    raw_json_path.write_text(
+        json.dumps(
+            {
+                "pages": [
+                    {"index": 0, "markdown": f"{repeated_line}\nPage 0 content."},
+                    {"index": 1, "markdown": f"{repeated_line}\nPage 1 content."},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    clean_file(
+        raw_json_path,
+        out_dir=out_dir,
+        out_name="doc",
+        remove_frequent_lines=True,
+    )
+
+    md_path = out_dir / "md" / "doc.md"
+    json_path = out_dir / "json" / "doc.json"
+
+    assert repeated_line in md_path.read_text(encoding="utf-8")
+
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert all(repeated_line in page["markdown"] for page in data["pages"])
+
+
 def test_clean_file_rejects_invalid_raw_ocr_payload(tmp_path: Path) -> None:
     """Conversion should fail fast when OCR output breaks the frozen schema."""
     raw_json_path = tmp_path / "raw.json"
@@ -72,4 +105,14 @@ def test_clean_file_rejects_invalid_raw_ocr_payload(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="sequential indexes"):
+        clean_file(raw_json_path, out_dir=out_dir, out_name="doc")
+
+
+def test_clean_file_rejects_non_json_input(tmp_path: Path) -> None:
+    """Conversion should raise a clear error for syntactically invalid JSON."""
+    raw_json_path = tmp_path / "raw.json"
+    out_dir = tmp_path / "converted"
+    raw_json_path.write_text("not valid json", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="not valid JSON"):
         clean_file(raw_json_path, out_dir=out_dir, out_name="doc")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -10,7 +11,8 @@ from pathlib import Path
 import fitz
 import pytest
 
-from vlmocr.ocr import convert_file, get_pdf_info, render_page_to_image
+import vlmocr.ocr as ocr_module
+from vlmocr.ocr import create_client, get_pdf_info, render_page_to_image
 
 
 def _create_test_pdf(num_pages: int) -> str:
@@ -70,7 +72,7 @@ def test_convert_file_invalid_max_workers(tmp_path: Path) -> None:
     path = _create_test_pdf(1)
     try:
         with pytest.raises(ValueError, match="max_workers must be >= 1"):
-            convert_file(
+            ocr_module.convert_file(
                 client=None,
                 file_path=path,
                 output_dir=tmp_path,
@@ -78,7 +80,7 @@ def test_convert_file_invalid_max_workers(tmp_path: Path) -> None:
                 max_workers=0,
             )
         with pytest.raises(ValueError, match="max_workers must be >= 1"):
-            convert_file(
+            ocr_module.convert_file(
                 client=None,
                 file_path=path,
                 output_dir=tmp_path,
@@ -104,7 +106,7 @@ def test_convert_file_retries_then_raises(
 
     try:
         with pytest.raises(RuntimeError, match="failed after"):
-            convert_file(
+            ocr_module.convert_file(
                 client=None,
                 file_path=path,
                 output_dir=tmp_path,
@@ -114,3 +116,48 @@ def test_convert_file_retries_then_raises(
             )
     finally:
         os.unlink(path)
+
+
+def test_create_client_requires_openrouter_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """create_client should fail clearly when no API key is configured."""
+    monkeypatch.setattr(ocr_module.dotenv, "load_dotenv", lambda: None)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    with pytest.raises(ValueError, match="https://openrouter.ai/keys"):
+        create_client()
+
+
+def test_convert_file_writes_raw_json_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """convert_file should emit canonical raw OCR JSON under json/raw."""
+    path = _create_test_pdf(2)
+
+    monkeypatch.setattr(
+        ocr_module,
+        "_ocr_page",
+        lambda client, base64_image, model=None, fmt=None, max_tokens=None: (
+            "# Extracted page"
+        ),
+    )
+
+    try:
+        output_path = ocr_module.convert_file(
+            client=object(),
+            file_path=path,
+            output_dir=tmp_path,
+            out_name="test",
+            max_workers=1,
+        )
+    finally:
+        os.unlink(path)
+
+    assert output_path == tmp_path / "json" / "raw" / "test.json"
+    assert json.loads(output_path.read_text(encoding="utf-8")) == {
+        "pages": [
+            {"index": 0, "markdown": "# Extracted page"},
+            {"index": 1, "markdown": "# Extracted page"},
+        ]
+    }

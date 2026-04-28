@@ -136,7 +136,12 @@ def clean_file(
     toc_dir.mkdir(parents=True, exist_ok=True)
 
     with open(raw_json_path, encoding="utf-8") as handle:
-        data = validate_raw_ocr_document(json.load(handle))
+        try:
+            data = validate_raw_ocr_document(json.load(handle))
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"Raw OCR file is not valid JSON: {raw_json_path}"
+            ) from exc
 
     page_markdowns: list[str] = []
     for page in data.get("pages", []):

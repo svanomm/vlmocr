@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TypedDict
 
@@ -11,6 +12,15 @@ RAW_OCR_SUBDIR = Path("json/raw")
 CLEANED_OCR_JSON_SUBDIR = Path("json")
 CLEANED_MARKDOWN_SUBDIR = Path("md")
 MARKDOWN_TOC_SUBDIR = Path("md/table of contents")
+
+
+@dataclass(frozen=True)
+class ProjectPathStatus:
+    """Validation status for one expected project directory."""
+
+    label: str
+    path: Path
+    exists: bool
 
 
 class RawOcrPage(TypedDict):
@@ -44,6 +54,46 @@ def get_cleaned_markdown_dir(out_dir: Path) -> Path:
 def get_markdown_toc_dir(out_dir: Path) -> Path:
     """Return the table-of-contents directory under *out_dir*."""
     return out_dir / MARKDOWN_TOC_SUBDIR
+
+
+def get_project_directories(
+    docs_dir: Path = DEFAULT_DOCS_DIR,
+    out_dir: Path = DEFAULT_OUT_DIR,
+) -> dict[str, Path]:
+    """Return the directories that make up the standard vlmocr workspace."""
+    return {
+        "docs": docs_dir,
+        "output root": out_dir,
+        "raw OCR JSON": get_raw_ocr_dir(out_dir),
+        "cleaned OCR JSON": get_cleaned_ocr_json_dir(out_dir),
+        "cleaned markdown": get_cleaned_markdown_dir(out_dir),
+        "markdown table of contents": get_markdown_toc_dir(out_dir),
+    }
+
+
+def initialize_project_structure(
+    docs_dir: Path = DEFAULT_DOCS_DIR,
+    out_dir: Path = DEFAULT_OUT_DIR,
+) -> list[Path]:
+    """Create the standard directory structure for a vlmocr project."""
+    created_paths: list[Path] = []
+    for path in get_project_directories(docs_dir=docs_dir, out_dir=out_dir).values():
+        if path.exists():
+            continue
+        path.mkdir(parents=True, exist_ok=True)
+        created_paths.append(path)
+    return created_paths
+
+
+def validate_project_structure(
+    docs_dir: Path = DEFAULT_DOCS_DIR,
+    out_dir: Path = DEFAULT_OUT_DIR,
+) -> list[ProjectPathStatus]:
+    """Report whether the standard vlmocr workspace directories exist."""
+    return [
+        ProjectPathStatus(label=label, path=path, exists=path.exists())
+        for label, path in get_project_directories(docs_dir=docs_dir, out_dir=out_dir).items()
+    ]
 
 
 def build_raw_ocr_document(page_markdowns: list[str]) -> RawOcrDocument:

@@ -3,11 +3,22 @@
 from __future__ import annotations
 
 import argparse
+import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Sequence
 
 from vlmocr import conversion, estimate_cost, ocr
-from vlmocr.contract import DEFAULT_DOCS_DIR, DEFAULT_OUT_DIR, get_raw_ocr_dir
+from vlmocr.contract import (
+    DEFAULT_DOCS_DIR,
+    DEFAULT_OUT_DIR,
+    get_raw_ocr_dir,
+    initialize_project_structure,
+    validate_project_structure,
+)
+
+InputFunc = Callable[[str], str]
+OutputFunc = Callable[[str], None]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -20,7 +31,14 @@ def build_parser() -> argparse.ArgumentParser:
         prog="vlmocr",
         description="PDF OCR, conversion, and OCR cost estimation.",
     )
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command")
+
+    init_parser = subparsers.add_parser(
+        "init",
+        help="Create and validate the standard vlmocr project structure.",
+    )
+    init_parser.add_argument("--docs-dir", type=Path, default=DEFAULT_DOCS_DIR)
+    init_parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
 
     ocr_parser = subparsers.add_parser(
         "ocr",
@@ -80,39 +98,348 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _format_quickstart(docs_dir: Path, out_dir: Path) -> str:
+    raw_dir = get_raw_ocr_dir(out_dir)
+    return "\n".join(
+        [
+            "Next steps:",
+            "  1. Create an OpenRouter API key at https://openrouter.ai/keys",
+            (
+                "  2. Save it in a `.env` file in your project root as "
+                "`OPENROUTER_API_KEY=your_key_here`, or pass it with `--api-key`"
+            ),
+            f"  3. Put PDF files in {docs_dir}",
+            (
+                "  4. Run "
+                f"`vlmocr ocr --docs-dir {docs_dir} --out-dir {out_dir}` to write raw OCR JSON"
+            ),
+            (
+                "  5. Run "
+                f"`vlmocr convert --out-dir {out_dir}` to create cleaned markdown and cleaned JSON"
+            ),
+            f"  6. If you already have raw OCR JSON, place it in {raw_dir} before running convert",
+        ]
+    )
+
+
+def _print_project_status(
+    output_fn: OutputFunc,
+    *,
+    docs_dir: Path,
+    out_dir: Path,
+) -> None:
+    output_fn("Project structure:")
+    for status in validate_project_structure(docs_dir=docs_dir, out_dir=out_dir):
+        marker = "ok" if status.exists else "missing"
+        output_fn(f"  [{marker}] {status.label}: {status.path}")
+
+
+def run_init_command(
+    *,
+    docs_dir: Path = DEFAULT_DOCS_DIR,
+    out_dir: Path = DEFAULT_OUT_DIR,
+    output_fn: OutputFunc = print,
+) -> list[Path]:
+    """Create the standard vlmocr directory layout and print next steps."""
+    created_paths = initialize_project_structure(docs_dir=docs_dir, out_dir=out_dir)
+
+    if created_paths:
+        output_fn("Created project directories:")
+        for path in created_paths:
+            output_fn(f"  - {path}")
+    else:
+        output_fn("Project directories already exist.")
+
+    _print_project_status(output_fn, docs_dir=docs_dir, out_dir=out_dir)
+    output_fn("")
+    output_fn(_format_quickstart(docs_dir=docs_dir, out_dir=out_dir))
+    return created_paths
+
+
+def _prompt_text(input_fn: InputFunc, label: str, *, default: str = "") -> str:
+    prompt = f"{label} [{default}]: " if default else f"{label}: "
+    response = input_fn(prompt).strip()
+    return response or default
+
+
+def _prompt_path(input_fn: InputFunc, label: str, *, default: Path) -> Path:
+    return Path(_prompt_text(input_fn, label, default=str(default)))
+
+
+def _prompt_int(input_fn: InputFunc, label: str, *, default: int) -> int:
+    while True:
+        value = _prompt_text(input_fn, label, default=str(default))
+        try:
+            return int(value)
+        except ValueError:
+            print(f"Please enter an integer for {label.lower()}.")
+
+
+def _prompt_bool(input_fn: InputFunc, label: str, *, default: bool) -> bool:
+    suffix = "Y/n" if default else "y/N"
+    while True:
+        value = input_fn(f"{label} [{suffix}]: ").strip().lower()
+        if not value:
+            return default
+        if value in {"y", "yes"}:
+            return True
+        if value in {"n", "no"}:
+            return False
+        print("Please answer y or n.")
+
+
+def _pause(input_fn: InputFunc) -> None:
+    input_fn("Press Enter to return to the menu...")
+
+
+def _friendly_error_message(args: argparse.Namespace, exc: Exception) -> str:
+    if args.command == "convert":
+        input_dir = args.input_dir or get_raw_ocr_dir(args.out_dir)
+        return "\n".join(
+            [
+                str(exc),
+                "",
+                f"Run `vlmocr init --out-dir {args.out_dir}` to create the standard folders.",
+                (
+                    "If you are starting from PDFs, add them to "
+                    f"{DEFAULT_DOCS_DIR} and run `vlmocr ocr --out-dir {args.out_dir}` first."
+                ),
+                f"If you already have raw OCR JSON, place it in {input_dir} and rerun convert.",
+                "",
+            ]
+        )
+
+    if args.command == "ocr":
+        details = [str(exc), ""]
+        if "OPENROUTER_API_KEY" in str(exc):
+            details.extend(
+                [
+                    "Get an API key from https://openrouter.ai/keys.",
+                    "Then either:",
+                    "  - create a `.env` file in your project root with `OPENROUTER_API_KEY=your_key_here`",
+                    "  - set the OPENROUTER_API_KEY environment variable",
+                    "  - or rerun the command with `--api-key <your_key>`",
+                    "",
+                ]
+            )
+
+        details.extend(
+            [
+                (
+                    f"Run `vlmocr init --docs-dir {args.docs_dir} --out-dir {args.out_dir}` "
+                    "to create the standard folders."
+                ),
+                f"Then add PDF files to {args.docs_dir} and rerun the OCR command.",
+                "",
+            ]
+        )
+        return "\n".join(details)
+
+    return f"{exc}\n"
+
+
+def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    try:
+        if args.command == "init":
+            run_init_command(docs_dir=args.docs_dir, out_dir=args.out_dir)
+            return
+
+        if args.command == "ocr":
+            ocr.ocr_documents(
+                docs_dir=args.docs_dir,
+                out_dir=args.out_dir,
+                api_key=args.api_key,
+                model=args.model,
+                dpi=args.dpi,
+                fmt=args.format,
+                max_workers=args.max_workers,
+                max_retries=args.max_retries,
+            )
+            return
+
+        if args.command == "convert":
+            conversion.convert_directory(
+                input_dir=args.input_dir or get_raw_ocr_dir(args.out_dir),
+                out_dir=args.out_dir,
+                remove_frequent_lines=args.remove_frequent_lines,
+                inject_footnotes=args.inject_footnotes,
+            )
+            return
+
+        if args.command == "estimate-cost":
+            estimate_cost.count_pages(args.docs_dir)
+            return
+    except (FileNotFoundError, ValueError) as exc:
+        parser.exit(status=2, message=_friendly_error_message(args, exc))
+
+    parser.error(f"Unsupported command: {args.command}")
+
+
+def _prompt_api_key(input_fn: InputFunc) -> str | None:
+    value = _prompt_text(
+        input_fn,
+        "OpenRouter API key (leave blank to use OPENROUTER_API_KEY or a .env file in the project root)",
+        default="",
+    )
+    return value or None
+
+
+def launch_tui(
+    *,
+    input_fn: InputFunc = input,
+    output_fn: OutputFunc = print,
+) -> None:
+    """Launch an interactive terminal menu for new and occasional users."""
+    while True:
+        output_fn("")
+        output_fn("vlmocr interactive launcher")
+        output_fn("---------------------------")
+        output_fn(f"docs: {DEFAULT_DOCS_DIR}")
+        output_fn(f"out : {DEFAULT_OUT_DIR}")
+        output_fn("1. Init project structure")
+        output_fn("2. Run OCR on PDFs")
+        output_fn("3. Convert raw OCR JSON")
+        output_fn("4. Estimate OCR cost")
+        output_fn("5. Validate current structure")
+        output_fn("6. Show quickstart")
+        output_fn("7. Quit")
+
+        try:
+            choice = input_fn("Select an option [1-7]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            output_fn("")
+            output_fn("Exiting vlmocr.")
+            return
+
+        if choice == "1":
+            docs_dir = _prompt_path(input_fn, "Docs directory", default=DEFAULT_DOCS_DIR)
+            out_dir = _prompt_path(input_fn, "Output directory", default=DEFAULT_OUT_DIR)
+            run_init_command(docs_dir=docs_dir, out_dir=out_dir, output_fn=output_fn)
+            _pause(input_fn)
+            continue
+
+        if choice == "2":
+            docs_dir = _prompt_path(input_fn, "Docs directory", default=DEFAULT_DOCS_DIR)
+            out_dir = _prompt_path(input_fn, "Output directory", default=DEFAULT_OUT_DIR)
+            output_fn(
+                "You need an OpenRouter API key for OCR. Create one at https://openrouter.ai/keys."
+            )
+            output_fn(
+                "You can paste it now, or leave it blank and set OPENROUTER_API_KEY in a .env file later."
+            )
+            api_key = _prompt_api_key(input_fn)
+            model = _prompt_text(input_fn, "Model", default=ocr.DEFAULT_OCR_MODEL)
+            dpi = _prompt_int(input_fn, "DPI", default=ocr.DEFAULT_OCR_DPI)
+            fmt = _prompt_text(input_fn, "Image format", default=ocr.DEFAULT_OCR_IMAGE_FORMAT)
+            max_workers = _prompt_int(
+                input_fn,
+                "Max workers",
+                default=ocr.DEFAULT_OCR_MAX_WORKERS,
+            )
+            max_retries = _prompt_int(
+                input_fn,
+                "Max retries",
+                default=ocr.DEFAULT_OCR_MAX_RETRIES,
+            )
+            try:
+                ocr.ocr_documents(
+                    docs_dir=docs_dir,
+                    out_dir=out_dir,
+                    api_key=api_key,
+                    model=model,
+                    dpi=dpi,
+                    fmt=fmt,
+                    max_workers=max_workers,
+                    max_retries=max_retries,
+                )
+            except (FileNotFoundError, ValueError) as exc:
+                output_fn(_friendly_error_message(argparse.Namespace(command="ocr", docs_dir=docs_dir, out_dir=out_dir), exc))
+            _pause(input_fn)
+            continue
+
+        if choice == "3":
+            out_dir = _prompt_path(input_fn, "Output directory", default=DEFAULT_OUT_DIR)
+            default_input_dir = get_raw_ocr_dir(out_dir)
+            input_dir_text = _prompt_text(
+                input_fn,
+                "Input directory",
+                default=str(default_input_dir),
+            )
+            remove_frequent_lines = _prompt_bool(
+                input_fn,
+                "Remove repeated header/footer lines",
+                default=False,
+            )
+            inject_footnotes = _prompt_bool(
+                input_fn,
+                "Inject footnotes inline",
+                default=True,
+            )
+            try:
+                conversion.convert_directory(
+                    input_dir=Path(input_dir_text),
+                    out_dir=out_dir,
+                    remove_frequent_lines=remove_frequent_lines,
+                    inject_footnotes=inject_footnotes,
+                )
+            except (FileNotFoundError, ValueError) as exc:
+                output_fn(
+                    _friendly_error_message(
+                        argparse.Namespace(
+                            command="convert",
+                            input_dir=Path(input_dir_text),
+                            out_dir=out_dir,
+                        ),
+                        exc,
+                    )
+                )
+            _pause(input_fn)
+            continue
+
+        if choice == "4":
+            docs_dir = _prompt_path(input_fn, "Docs directory", default=DEFAULT_DOCS_DIR)
+            try:
+                estimate_cost.count_pages(docs_dir)
+            except FileNotFoundError as exc:
+                output_fn(
+                    _friendly_error_message(
+                        argparse.Namespace(command="ocr", docs_dir=docs_dir, out_dir=DEFAULT_OUT_DIR),
+                        exc,
+                    )
+                )
+            _pause(input_fn)
+            continue
+
+        if choice == "5":
+            docs_dir = _prompt_path(input_fn, "Docs directory", default=DEFAULT_DOCS_DIR)
+            out_dir = _prompt_path(input_fn, "Output directory", default=DEFAULT_OUT_DIR)
+            _print_project_status(output_fn, docs_dir=docs_dir, out_dir=out_dir)
+            _pause(input_fn)
+            continue
+
+        if choice == "6":
+            output_fn(_format_quickstart(DEFAULT_DOCS_DIR, DEFAULT_OUT_DIR))
+            _pause(input_fn)
+            continue
+
+        if choice in {"7", "q", "quit", "exit"}:
+            output_fn("Exiting vlmocr.")
+            return
+
+        output_fn("Please choose a menu option from 1 to 7.")
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     """Run the vlmocr CLI.
 
     Args:
         argv: Optional argument list.
     """
+    raw_argv = list(argv) if argv is not None else sys.argv[1:]
+    if not raw_argv:
+        launch_tui()
+        return
+
     parser = build_parser()
-    args = parser.parse_args(list(argv) if argv is not None else None)
-
-    if args.command == "ocr":
-        ocr.ocr_documents(
-            docs_dir=args.docs_dir,
-            out_dir=args.out_dir,
-            api_key=args.api_key,
-            model=args.model,
-            dpi=args.dpi,
-            fmt=args.format,
-            max_workers=args.max_workers,
-            max_retries=args.max_retries,
-        )
-        return
-
-    if args.command == "convert":
-        conversion.convert_directory(
-            input_dir=args.input_dir or get_raw_ocr_dir(args.out_dir),
-            out_dir=args.out_dir,
-            remove_frequent_lines=args.remove_frequent_lines,
-            inject_footnotes=args.inject_footnotes,
-        )
-        return
-
-    if args.command == "estimate-cost":
-        estimate_cost.count_pages(args.docs_dir)
-        return
-
-    parser.error(f"Unsupported command: {args.command}")
+    args = parser.parse_args(raw_argv)
+    _run_command(args, parser)

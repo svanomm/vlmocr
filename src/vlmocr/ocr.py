@@ -95,7 +95,7 @@ def create_client(api_key: str | None = None) -> OpenAI:
     resolved_api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "").strip()
     if not resolved_api_key:
         raise ValueError(
-            "OPENROUTER_API_KEY is required for OCR. Set it in your environment or .env file."
+            "OPENROUTER_API_KEY is required for OCR. Get one from https://openrouter.ai/keys and set it in your environment, pass --api-key, or add OPENROUTER_API_KEY=your_key_here to a .env file in the project root."
         )
 
     return OpenAI(

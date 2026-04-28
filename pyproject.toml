@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
 [project]
 name = "vlmocr"
 version = "0.1.0"
@@ -13,6 +17,12 @@ dependencies = [
 
 [project.scripts]
 vlmocr = "vlmocr.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vlmocr"]
+
+[tool.uv]
+package = true
 
 [dependency-groups]
 dev = [

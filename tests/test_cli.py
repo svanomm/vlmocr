@@ -2,11 +2,22 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+import fitz
 import pytest
 
 import vlmocr.cli as cli
+
+
+def _create_test_pdf(path: Path, *, text: str = "Page 1") -> None:
+    """Create a minimal PDF for CLI smoke tests."""
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), text)
+    doc.save(path)
+    doc.close()
 
 
 def test_main_dispatches_ocr_command(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -57,3 +68,176 @@ def test_main_dispatches_estimate_cost_command(monkeypatch: pytest.MonkeyPatch) 
     cli.main(["estimate-cost", "--docs-dir", "docs"])
 
     assert captured["folder"] == Path("docs")
+
+
+def test_main_ocr_writes_raw_json_to_selected_out_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The OCR CLI should write raw JSON under the selected output root."""
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    pdf_path = docs_dir / "sample.pdf"
+    _create_test_pdf(pdf_path)
+    out_dir = tmp_path / "converted"
+
+    monkeypatch.setattr(cli.ocr, "create_client", lambda api_key=None: object())
+    monkeypatch.setattr(
+        cli.ocr,
+        "_ocr_page",
+        lambda client, base64_image, model=None, fmt=None, max_tokens=None: "# Page 1",
+    )
+
+    cli.main(
+        [
+            "ocr",
+            "--docs-dir",
+            str(docs_dir),
+            "--out-dir",
+            str(out_dir),
+            "--max-workers",
+            "1",
+        ]
+    )
+
+    raw_json_path = out_dir / "json" / "raw" / "sample.json"
+    assert raw_json_path.exists()
+    assert json.loads(raw_json_path.read_text(encoding="utf-8")) == {
+        "pages": [{"index": 0, "markdown": "# Page 1"}]
+    }
+
+
+def test_main_convert_uses_default_input_dir_and_writes_artifact_tree(
+    tmp_path: Path,
+) -> None:
+    """The convert CLI should default to out_dir/json/raw and write all expected artifacts."""
+    out_dir = tmp_path / "converted"
+    raw_dir = out_dir / "json" / "raw"
+    raw_dir.mkdir(parents=True)
+    (raw_dir / "sample.json").write_text(
+        json.dumps(
+            {
+                "pages": [
+                    {"index": 0, "markdown": "# Title\nBody line."},
+                    {"index": 1, "markdown": "## Section\nMore body."},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cli.main(["convert", "--out-dir", str(out_dir)])
+
+    assert (out_dir / "json" / "sample.json").exists()
+    assert (out_dir / "md" / "sample.md").exists()
+    assert (out_dir / "md" / "table of contents" / "sample_toc.md").exists()
+
+    markdown = (out_dir / "md" / "sample.md").read_text(encoding="utf-8")
+    toc = (out_dir / "md" / "table of contents" / "sample_toc.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "# Title" in markdown
+    assert "## Section" in toc
+
+
+def test_main_without_args_launches_tui(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Invoking vlmocr with no args should open the interactive launcher."""
+    launched = {"value": False}
+
+    def fake_launch_tui() -> None:
+        launched["value"] = True
+
+    monkeypatch.setattr(cli, "launch_tui", fake_launch_tui)
+
+    cli.main([])
+
+    assert launched["value"] is True
+
+
+def test_main_init_creates_project_structure(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The init command should create the default working directories and print guidance."""
+    docs_dir = tmp_path / "docs"
+    out_dir = tmp_path / "converted"
+
+    cli.main(["init", "--docs-dir", str(docs_dir), "--out-dir", str(out_dir)])
+
+    captured = capsys.readouterr()
+
+    assert docs_dir.is_dir()
+    assert (out_dir / "json" / "raw").is_dir()
+    assert (out_dir / "md").is_dir()
+    assert "Next steps:" in captured.out
+    assert "https://openrouter.ai/keys" in captured.out
+    assert "OPENROUTER_API_KEY=your_key_here" in captured.out
+    assert "vlmocr ocr" in captured.out
+
+
+def test_main_convert_missing_input_dir_shows_first_run_guidance(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Convert should explain how to initialize the workspace instead of showing a traceback."""
+    out_dir = tmp_path / "converted"
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main(["convert", "--out-dir", str(out_dir)])
+
+    captured = capsys.readouterr()
+
+    assert exc_info.value.code == 2
+    assert "vlmocr init" in captured.err
+    assert "vlmocr ocr" in captured.err
+    assert str(out_dir / "json" / "raw") in captured.err
+
+
+def test_launch_tui_can_run_init_flow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The interactive launcher should let users initialize a workspace."""
+    docs_dir = tmp_path / "docs"
+    out_dir = tmp_path / "converted"
+    responses = iter(["1", str(docs_dir), str(out_dir), "", "7"])
+    output_lines: list[str] = []
+
+    monkeypatch.setattr(cli, "DEFAULT_DOCS_DIR", docs_dir)
+    monkeypatch.setattr(cli, "DEFAULT_OUT_DIR", out_dir)
+
+    cli.launch_tui(
+        input_fn=lambda prompt: next(responses),
+        output_fn=output_lines.append,
+    )
+
+    assert docs_dir.is_dir()
+    assert (out_dir / "json" / "raw").is_dir()
+    assert any("interactive launcher" in line for line in output_lines)
+    assert any("Next steps:" in line for line in output_lines)
+    assert any("https://openrouter.ai/keys" in line for line in output_lines)
+
+
+def test_main_ocr_missing_api_key_shows_setup_instructions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """OCR should explain where to get an API key and how to configure it."""
+    docs_dir = tmp_path / "docs"
+    out_dir = tmp_path / "converted"
+    docs_dir.mkdir()
+    (docs_dir / "sample.pdf").write_bytes(b"fake pdf")
+
+    monkeypatch.setattr(
+        cli.ocr,
+        "ocr_documents",
+        lambda **kwargs: (_ for _ in ()).throw(
+            ValueError("OPENROUTER_API_KEY is required for OCR")
+        ),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main(["ocr", "--docs-dir", str(docs_dir), "--out-dir", str(out_dir)])
+
+    captured = capsys.readouterr()
+
+    assert exc_info.value.code == 2
+    assert "https://openrouter.ai/keys" in captured.err
+    assert "OPENROUTER_API_KEY" in captured.err
+    assert "--api-key" in captured.err
