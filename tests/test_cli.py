@@ -155,13 +155,18 @@ def test_main_without_args_launches_tui(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_main_init_creates_project_structure(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """The init command should create the default working directories and print guidance."""
     docs_dir = tmp_path / "docs"
     out_dir = tmp_path / "converted"
 
-    cli.main(["init", "--docs-dir", str(docs_dir), "--out-dir", str(out_dir)])
+    monkeypatch.setattr(cli, "DEFAULT_DOCS_DIR", docs_dir)
+    monkeypatch.setattr(cli, "DEFAULT_OUT_DIR", out_dir)
+
+    cli.main(["init"])
 
     captured = capsys.readouterr()
 
@@ -172,6 +177,19 @@ def test_main_init_creates_project_structure(
     assert "https://openrouter.ai/keys" in captured.out
     assert "OPENROUTER_API_KEY=your_key_here" in captured.out
     assert "vlmocr ocr" in captured.out
+
+
+def test_main_init_rejects_custom_directory_arguments(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The init command should no longer accept custom directory overrides."""
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main(["init", "--docs-dir", "docs"])
+
+    captured = capsys.readouterr()
+
+    assert exc_info.value.code == 2
+    assert "unrecognized arguments: --docs-dir docs" in captured.err
 
 
 def test_main_convert_missing_input_dir_shows_first_run_guidance(
@@ -197,7 +215,7 @@ def test_launch_tui_can_run_init_flow(
     """The interactive launcher should let users initialize a workspace."""
     docs_dir = tmp_path / "docs"
     out_dir = tmp_path / "converted"
-    responses = iter(["1", str(docs_dir), str(out_dir), "", "7"])
+    responses = iter(["1", "", "6"])
     output_lines: list[str] = []
 
     monkeypatch.setattr(cli, "DEFAULT_DOCS_DIR", docs_dir)
@@ -213,6 +231,161 @@ def test_launch_tui_can_run_init_flow(
     assert any("interactive launcher" in line for line in output_lines)
     assert any("Next steps:" in line for line in output_lines)
     assert any("https://openrouter.ai/keys" in line for line in output_lines)
+
+
+def test_launch_tui_ocr_default_options_skip_extra_questions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Accepting default OCR options should skip the detailed prompt sequence."""
+    docs_dir = tmp_path / "docs"
+    out_dir = tmp_path / "converted"
+    docs_dir.mkdir()
+    prompts: list[str] = []
+    output_lines: list[str] = []
+    responses = iter(["2", "y", "y", "", "6"])
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(cli, "DEFAULT_DOCS_DIR", docs_dir)
+    monkeypatch.setattr(cli, "DEFAULT_OUT_DIR", out_dir)
+
+    def fake_count_pages(folder: Path, *, output_fn=print) -> float | None:
+        assert folder == docs_dir
+        output_fn("Total estimated: $12.3400")
+        return 12.34
+
+    def fake_ocr_documents(**kwargs: object) -> list[Path]:
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(cli.estimate_cost, "count_pages", fake_count_pages)
+    monkeypatch.setattr(cli.ocr, "ocr_documents", fake_ocr_documents)
+
+    cli.launch_tui(
+        input_fn=lambda prompt: prompts.append(prompt) or next(responses),
+        output_fn=output_lines.append,
+    )
+
+    assert prompts == [
+        "Select an option [1-6]: ",
+        "Use default OCR options? [Y/n]: ",
+        "Proceed with OCR using the estimated cost above? [y/N]: ",
+        "Press Enter to return to the menu...",
+        "Select an option [1-6]: ",
+    ]
+    assert any("Total estimated: $12.3400" in line for line in output_lines)
+    assert captured["docs_dir"] == docs_dir
+    assert captured["out_dir"] == out_dir
+    assert captured["api_key"] is None
+    assert captured["model"] == cli.ocr.DEFAULT_OCR_MODEL
+    assert captured["dpi"] == cli.ocr.DEFAULT_OCR_DPI
+    assert captured["fmt"] == cli.ocr.DEFAULT_OCR_IMAGE_FORMAT
+    assert captured["max_workers"] == cli.ocr.DEFAULT_OCR_MAX_WORKERS
+    assert captured["max_retries"] == cli.ocr.DEFAULT_OCR_MAX_RETRIES
+
+
+def test_launch_tui_ocr_requires_final_confirmation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The launcher should estimate cost and allow the user to cancel before OCR starts."""
+    docs_dir = tmp_path / "docs"
+    out_dir = tmp_path / "converted"
+    docs_dir.mkdir()
+    output_lines: list[str] = []
+    responses = iter(["2", "y", "n", "", "6"])
+    ocr_called = {"value": False}
+
+    monkeypatch.setattr(cli, "DEFAULT_DOCS_DIR", docs_dir)
+    monkeypatch.setattr(cli, "DEFAULT_OUT_DIR", out_dir)
+
+    def fake_count_pages(folder: Path, *, output_fn=print) -> float | None:
+        output_fn("Total estimated: $99.9900")
+        return 99.99
+
+    def fake_ocr_documents(**kwargs: object) -> list[Path]:
+        ocr_called["value"] = True
+        return []
+
+    monkeypatch.setattr(cli.estimate_cost, "count_pages", fake_count_pages)
+    monkeypatch.setattr(cli.ocr, "ocr_documents", fake_ocr_documents)
+
+    cli.launch_tui(
+        input_fn=lambda prompt: next(responses),
+        output_fn=output_lines.append,
+    )
+
+    assert ocr_called["value"] is False
+    assert any("Total estimated: $99.9900" in line for line in output_lines)
+    assert any("OCR cancelled." in line for line in output_lines)
+
+
+def test_launch_tui_convert_uses_default_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The convert launcher flow should stay on the standard input and output folders."""
+    docs_dir = tmp_path / "docs"
+    out_dir = tmp_path / "converted"
+    prompts: list[str] = []
+    captured: dict[str, object] = {}
+    responses = iter(["3", "y", "n", "", "6"])
+
+    monkeypatch.setattr(cli, "DEFAULT_DOCS_DIR", docs_dir)
+    monkeypatch.setattr(cli, "DEFAULT_OUT_DIR", out_dir)
+
+    def fake_convert_directory(**kwargs: object) -> list[tuple[Path, Path]]:
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(cli.conversion, "convert_directory", fake_convert_directory)
+
+    cli.launch_tui(
+        input_fn=lambda prompt: prompts.append(prompt) or next(responses),
+        output_fn=lambda message: None,
+    )
+
+    assert prompts == [
+        "Select an option [1-6]: ",
+        "Remove repeated header/footer lines [y/N]: ",
+        "Inject footnotes inline [Y/n]: ",
+        "Press Enter to return to the menu...",
+        "Select an option [1-6]: ",
+    ]
+    assert captured["input_dir"] == out_dir / "json" / "raw"
+    assert captured["out_dir"] == out_dir
+    assert captured["remove_frequent_lines"] is True
+    assert captured["inject_footnotes"] is False
+
+
+def test_launch_tui_validate_uses_default_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The validate launcher flow should inspect the standard project folders without asking."""
+    docs_dir = tmp_path / "docs"
+    out_dir = tmp_path / "converted"
+    prompts: list[str] = []
+    captured: dict[str, Path] = {}
+    responses = iter(["4", "", "6"])
+
+    monkeypatch.setattr(cli, "DEFAULT_DOCS_DIR", docs_dir)
+    monkeypatch.setattr(cli, "DEFAULT_OUT_DIR", out_dir)
+
+    def fake_print_project_status(output_fn, *, docs_dir: Path, out_dir: Path) -> None:
+        captured["docs_dir"] = docs_dir
+        captured["out_dir"] = out_dir
+
+    monkeypatch.setattr(cli, "_print_project_status", fake_print_project_status)
+
+    cli.launch_tui(
+        input_fn=lambda prompt: prompts.append(prompt) or next(responses),
+        output_fn=lambda message: None,
+    )
+
+    assert prompts == [
+        "Select an option [1-6]: ",
+        "Press Enter to return to the menu...",
+        "Select an option [1-6]: ",
+    ]
+    assert captured["docs_dir"] == docs_dir
+    assert captured["out_dir"] == out_dir
 
 
 def test_main_ocr_missing_api_key_shows_setup_instructions(
