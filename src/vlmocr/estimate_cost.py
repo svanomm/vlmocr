@@ -9,8 +9,7 @@ import pymupdf
 
 from vlmocr.ocr import DEFAULT_OCR_MODEL
 
-OCR_IMAGE_TOKENS_PER_PAGE = 258
-OCR_PROMPT_OVERHEAD_TOKENS = 100
+OCR_INPUT_TOKENS_PER_PAGE = 1400
 OCR_OUTPUT_TOKENS_PER_PAGE = 800
 OCR_INPUT_COST_PER_1M_TOKENS = 0.25
 OCR_OUTPUT_COST_PER_1M_TOKENS = 1.50
@@ -40,9 +39,7 @@ def count_pages(folder: Path, *, output_fn: OutputFunc = print) -> float | None:
         file_details.append((pdf_path.name, pages))
         total_pages += pages
 
-    ocr_input_tokens = total_pages * (
-        OCR_IMAGE_TOKENS_PER_PAGE + OCR_PROMPT_OVERHEAD_TOKENS
-    )
+    ocr_input_tokens = total_pages * OCR_INPUT_TOKENS_PER_PAGE
     ocr_output_tokens = total_pages * OCR_OUTPUT_TOKENS_PER_PAGE
     ocr_input_cost = ocr_input_tokens / 1_000_000 * OCR_INPUT_COST_PER_1M_TOKENS
     ocr_output_cost = ocr_output_tokens / 1_000_000 * OCR_OUTPUT_COST_PER_1M_TOKENS

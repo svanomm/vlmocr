@@ -40,7 +40,7 @@ OCR_PROMPT = """
     Preserve reading order for multi-column layouts.
     Convert math to LaTeX: $$ for display math, $ for inline math.
     Wrap code snippets in triple backticks with language hints when clear.
-    For figures, charts, or diagrams, write a detailed description
+    For figures, charts, diagrams, or images, write a detailed description
         wrapped in <image> tags (e.g., <image>Description...</image>);
         preserve figure captions as text.
     Wrap inline footnote references in <ref> tags, e.g. <ref num="1"/>.

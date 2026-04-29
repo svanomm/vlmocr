@@ -318,6 +318,60 @@ def test_launch_tui_ocr_requires_final_confirmation(
     assert any("OCR cancelled." in line for line in output_lines)
 
 
+def test_launch_tui_ocr_custom_options_still_use_default_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Custom OCR settings should still run against the standard docs and output folders."""
+    docs_dir = tmp_path / "docs"
+    out_dir = tmp_path / "converted"
+    docs_dir.mkdir()
+    prompts: list[str] = []
+    responses = iter(["2", "n", "test-key", "openai/gpt-4.1-mini", "200", "jpeg", "4", "2", "y", "", "6"])
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(cli, "DEFAULT_DOCS_DIR", docs_dir)
+    monkeypatch.setattr(cli, "DEFAULT_OUT_DIR", out_dir)
+
+    def fake_count_pages(folder: Path, *, output_fn=print) -> float | None:
+        assert folder == docs_dir
+        output_fn("Total estimated: $1.2300")
+        return 1.23
+
+    def fake_ocr_documents(**kwargs: object) -> list[Path]:
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(cli.estimate_cost, "count_pages", fake_count_pages)
+    monkeypatch.setattr(cli.ocr, "ocr_documents", fake_ocr_documents)
+
+    cli.launch_tui(
+        input_fn=lambda prompt: prompts.append(prompt) or next(responses),
+        output_fn=lambda message: None,
+    )
+
+    assert prompts == [
+        "Select an option [1-6]: ",
+        "Use default OCR options? [Y/n]: ",
+        "OpenRouter API key (leave blank to use OPENROUTER_API_KEY or a .env file in the project root): ",
+        f"Model [{cli.ocr.DEFAULT_OCR_MODEL}]: ",
+        f"DPI [{cli.ocr.DEFAULT_OCR_DPI}]: ",
+        f"Image format [{cli.ocr.DEFAULT_OCR_IMAGE_FORMAT}]: ",
+        f"Max workers [{cli.ocr.DEFAULT_OCR_MAX_WORKERS}]: ",
+        f"Max retries [{cli.ocr.DEFAULT_OCR_MAX_RETRIES}]: ",
+        "Proceed with OCR using the estimated cost above? [y/N]: ",
+        "Press Enter to return to the menu...",
+        "Select an option [1-6]: ",
+    ]
+    assert captured["docs_dir"] == docs_dir
+    assert captured["out_dir"] == out_dir
+    assert captured["api_key"] == "test-key"
+    assert captured["model"] == "openai/gpt-4.1-mini"
+    assert captured["dpi"] == 200
+    assert captured["fmt"] == "jpeg"
+    assert captured["max_workers"] == 4
+    assert captured["max_retries"] == 2
+
+
 def test_launch_tui_convert_uses_default_directories(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

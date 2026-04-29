@@ -454,9 +454,10 @@ def _run_interactive_ocr(
 ) -> None:
     use_defaults = _prompt_bool(input_fn, "Use default OCR options?", default=True)
 
+    docs_dir = DEFAULT_DOCS_DIR
+    out_dir = DEFAULT_OUT_DIR
+
     if use_defaults:
-        docs_dir = DEFAULT_DOCS_DIR
-        out_dir = DEFAULT_OUT_DIR
         api_key = None
         model = ocr.DEFAULT_OCR_MODEL
         dpi = ocr.DEFAULT_OCR_DPI
@@ -464,8 +465,6 @@ def _run_interactive_ocr(
         max_workers = ocr.DEFAULT_OCR_MAX_WORKERS
         max_retries = ocr.DEFAULT_OCR_MAX_RETRIES
     else:
-        docs_dir = _prompt_path(input_fn, "Docs directory", default=DEFAULT_DOCS_DIR)
-        out_dir = _prompt_path(input_fn, "Output directory", default=DEFAULT_OUT_DIR)
         output_fn(
             "You need an OpenRouter API key for OCR. Create one at https://openrouter.ai/keys."
         )
