@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TypedDict
 
 DEFAULT_DOCS_DIR = Path("docs")
-DEFAULT_OUT_DIR = Path(".search/converted")
+DEFAULT_OUT_DIR = Path("converted")
 RAW_OCR_SUBDIR = Path("json/raw")
 CLEANED_OCR_JSON_SUBDIR = Path("json")
 CLEANED_MARKDOWN_SUBDIR = Path("md")

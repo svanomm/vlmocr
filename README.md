@@ -145,10 +145,10 @@ uv run vlmocr init
 `init` creates the default project structure and prints the next commands to run:
 
 - `docs`
-- `.search/converted/json/raw`
-- `.search/converted/json`
-- `.search/converted/md`
-- `.search/converted/md/table of contents`
+- `converted/json/raw`
+- `converted/json`
+- `converted/md`
+- `converted/md/table of contents`
 
 The `init` output also tells you to create an OpenRouter API key at `https://openrouter.ai/keys` and store it as `OPENROUTER_API_KEY` in a `.env` file in the project root before running OCR.
 
@@ -156,8 +156,8 @@ Local script entry point:
 
 ```bash
 uv run vlmocr init
-uv run vlmocr ocr --docs-dir docs --out-dir .search/converted
-uv run vlmocr convert --input-dir .search/converted/json/raw --out-dir .search/converted
+uv run vlmocr ocr --docs-dir docs --out-dir converted
+uv run vlmocr convert --input-dir converted/json/raw --out-dir converted
 uv run vlmocr estimate-cost --docs-dir docs
 ```
 
@@ -165,8 +165,8 @@ Module execution:
 
 ```bash
 uv run -m vlmocr init
-uv run -m vlmocr ocr --docs-dir docs --out-dir .search/converted
-uv run -m vlmocr convert --input-dir .search/converted/json/raw --out-dir .search/converted
+uv run -m vlmocr ocr --docs-dir docs --out-dir converted
+uv run -m vlmocr convert --input-dir converted/json/raw --out-dir converted
 uv run -m vlmocr estimate-cost --docs-dir docs
 ```
 
@@ -174,8 +174,8 @@ Release-mode `uvx` examples:
 
 ```bash
 uvx --from git+https://github.com/<owner>/<repo>@v0.1.0 vlmocr estimate-cost --docs-dir docs
-uvx --from git+https://github.com/<owner>/<repo>@v0.1.0 vlmocr ocr --docs-dir docs --out-dir .search/converted
-uvx --from git+https://github.com/<owner>/<repo>@v0.1.0 vlmocr convert --input-dir .search/converted/json/raw --out-dir .search/converted
+uvx --from git+https://github.com/<owner>/<repo>@v0.1.0 vlmocr ocr --docs-dir docs --out-dir converted
+uvx --from git+https://github.com/<owner>/<repo>@v0.1.0 vlmocr convert --input-dir converted/json/raw --out-dir converted
 ```
 
 ## Defaults and options
@@ -183,7 +183,7 @@ uvx --from git+https://github.com/<owner>/<repo>@v0.1.0 vlmocr convert --input-d
 Defaults:
 
 - `--docs-dir docs`
-- `--out-dir .search/converted`
+- `--out-dir converted`
 - `vlmocr` with no subcommand opens the interactive launcher
 - `convert` without `--input-dir` reads from `<out-dir>/json/raw`
 
