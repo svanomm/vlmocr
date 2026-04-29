@@ -17,18 +17,12 @@ OCR_OUTPUT_COST_PER_1M_TOKENS = 1.50
 OutputFunc = Callable[[str], None]
 
 
-def count_pages(folder: Path, *, output_fn: OutputFunc = print) -> float | None:
-    """Count PDF files and pages in a folder, with OCR cost estimates.
-
-    Args:
-        folder: Path to the folder containing PDF files.
-
-    Returns:
-        Estimated total OCR cost, or ``None`` when no PDFs are found.
-    """
-    pdf_files = sorted(folder.glob("*.pdf"))
+def _count_pages_for_pdf_files(
+    pdf_files: list[Path], *, output_fn: OutputFunc = print, source_label: str
+) -> float | None:
+    """Count pages for an explicit list of PDFs and print OCR cost estimates."""
     if not pdf_files:
-        output_fn(f"No PDF files found in {folder}")
+        output_fn(f"No PDF files found in {source_label}")
         return None
 
     total_pages = 0
@@ -48,7 +42,7 @@ def count_pages(folder: Path, *, output_fn: OutputFunc = print) -> float | None:
     max_name_len = max(len(name) for name, _ in file_details)
     header = f"{'File':<{max_name_len}}  {'Pages':>5}"
     output_fn("")
-    output_fn(f"PDF Report for: {folder}")
+    output_fn(f"PDF Report for: {source_label}")
     output_fn("")
     output_fn(header)
     output_fn("-" * len(header))
@@ -71,3 +65,31 @@ def count_pages(folder: Path, *, output_fn: OutputFunc = print) -> float | None:
     )
     output_fn(f"{'Total estimated:':<{max_name_len}}  ${total_cost:.4f}")
     return total_cost
+
+
+def count_pages(folder: Path, *, output_fn: OutputFunc = print) -> float | None:
+    """Count PDF files and pages in a folder, with OCR cost estimates.
+
+    Args:
+        folder: Path to the folder containing PDF files.
+
+    Returns:
+        Estimated total OCR cost, or ``None`` when no PDFs are found.
+    """
+    pdf_files = sorted(folder.glob("*.pdf"))
+    return _count_pages_for_pdf_files(
+        pdf_files,
+        output_fn=output_fn,
+        source_label=str(folder),
+    )
+
+
+def count_pages_for_files(
+    pdf_files: list[Path], *, output_fn: OutputFunc = print, source_label: str
+) -> float | None:
+    """Count pages and estimate OCR cost for an explicit list of PDF files."""
+    return _count_pages_for_pdf_files(
+        sorted(pdf_files),
+        output_fn=output_fn,
+        source_label=source_label,
+    )

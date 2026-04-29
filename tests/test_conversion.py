@@ -9,6 +9,8 @@ import pytest
 
 from vlmocr.conversion import clean_file
 
+RAW_SETTINGS_HASH = "test-settings-hash"
+
 
 def _build_raw_json(path: Path, repeated_line: str, page_count: int = 12) -> None:
     """Create a synthetic raw OCR JSON file with repeated lines."""
@@ -16,7 +18,10 @@ def _build_raw_json(path: Path, repeated_line: str, page_count: int = 12) -> Non
         {"index": i, "markdown": f"{repeated_line}\nPage {i} content."}
         for i in range(page_count)
     ]
-    path.write_text(json.dumps({"pages": pages}), encoding="utf-8")
+    path.write_text(
+        json.dumps({"settings_hash": RAW_SETTINGS_HASH, "pages": pages}),
+        encoding="utf-8",
+    )
 
 
 def test_clean_file_keeps_frequent_lines_by_default(tmp_path: Path) -> None:
@@ -36,6 +41,7 @@ def test_clean_file_keeps_frequent_lines_by_default(tmp_path: Path) -> None:
     assert repeated_line in md_path.read_text(encoding="utf-8")
 
     data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert data["settings_hash"] == RAW_SETTINGS_HASH
     assert all(repeated_line in page["markdown"] for page in data["pages"])
 
 
@@ -59,6 +65,7 @@ def test_clean_file_removes_frequent_lines_when_enabled(tmp_path: Path) -> None:
     assert repeated_line not in md_path.read_text(encoding="utf-8")
 
     data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert data["settings_hash"] == RAW_SETTINGS_HASH
     assert all(repeated_line not in page["markdown"] for page in data["pages"])
 
 
@@ -70,6 +77,7 @@ def test_clean_file_does_not_over_remove_small_documents(tmp_path: Path) -> None
     raw_json_path.write_text(
         json.dumps(
             {
+                "settings_hash": RAW_SETTINGS_HASH,
                 "pages": [
                     {"index": 0, "markdown": f"{repeated_line}\nPage 0 content."},
                     {"index": 1, "markdown": f"{repeated_line}\nPage 1 content."},
@@ -92,6 +100,7 @@ def test_clean_file_does_not_over_remove_small_documents(tmp_path: Path) -> None
     assert repeated_line in md_path.read_text(encoding="utf-8")
 
     data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert data["settings_hash"] == RAW_SETTINGS_HASH
     assert all(repeated_line in page["markdown"] for page in data["pages"])
 
 
@@ -100,11 +109,29 @@ def test_clean_file_rejects_invalid_raw_ocr_payload(tmp_path: Path) -> None:
     raw_json_path = tmp_path / "raw.json"
     out_dir = tmp_path / "converted"
     raw_json_path.write_text(
-        json.dumps({"pages": [{"index": 1, "markdown": "Wrong page order."}]}),
+        json.dumps(
+            {
+                "settings_hash": RAW_SETTINGS_HASH,
+                "pages": [{"index": 1, "markdown": "Wrong page order."}],
+            }
+        ),
         encoding="utf-8",
     )
 
     with pytest.raises(ValueError, match="sequential indexes"):
+        clean_file(raw_json_path, out_dir=out_dir, out_name="doc")
+
+
+def test_clean_file_rejects_missing_settings_hash(tmp_path: Path) -> None:
+    """Conversion should reject raw OCR payloads that omit the required settings hash."""
+    raw_json_path = tmp_path / "raw.json"
+    out_dir = tmp_path / "converted"
+    raw_json_path.write_text(
+        json.dumps({"pages": [{"index": 0, "markdown": "Page body."}]}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="string 'settings_hash'"):
         clean_file(raw_json_path, out_dir=out_dir, out_name="doc")
 
 

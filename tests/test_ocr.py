@@ -99,7 +99,15 @@ def test_convert_file_retries_then_raises(
 
     path = _create_test_pdf(2)
 
-    def always_fail(client, base64_image, model=None, fmt=None, max_tokens=None):
+    def always_fail(
+        client,
+        base64_image,
+        model=None,
+        fmt=None,
+        prompt=None,
+        temperature=None,
+        max_tokens=None,
+    ):
         raise ConnectionError("simulated API failure")
 
     monkeypatch.setattr(ocr_module, "_ocr_page", always_fail)
@@ -138,9 +146,13 @@ def test_convert_file_writes_raw_json_contract(
     monkeypatch.setattr(
         ocr_module,
         "_ocr_page",
-        lambda client, base64_image, model=None, fmt=None, max_tokens=None: (
-            "# Extracted page"
-        ),
+        lambda client,
+        base64_image,
+        model=None,
+        fmt=None,
+        prompt=None,
+        temperature=None,
+        max_tokens=None: "# Extracted page",
     )
 
     try:
@@ -156,8 +168,47 @@ def test_convert_file_writes_raw_json_contract(
 
     assert output_path == tmp_path / "json" / "raw" / "test.json"
     assert json.loads(output_path.read_text(encoding="utf-8")) == {
+        "settings_hash": ocr_module.hash_ocr_settings(),
         "pages": [
             {"index": 0, "markdown": "# Extracted page"},
             {"index": 1, "markdown": "# Extracted page"},
         ]
     }
+
+
+def test_check_conversions_skips_only_matching_settings_hash(tmp_path: Path) -> None:
+    """check_conversions should only skip files whose raw JSON matches current OCR settings."""
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    out_dir = tmp_path / "converted"
+    raw_dir = out_dir / "json" / "raw"
+    raw_dir.mkdir(parents=True)
+
+    for name in ("matching", "changed", "legacy", "missing"):
+        (docs_dir / f"{name}.pdf").write_bytes(b"")
+
+    current_hash = ocr_module.hash_ocr_settings(model="test-model", dpi=300, fmt="jpeg")
+    (raw_dir / "matching.json").write_text(
+        json.dumps({"settings_hash": current_hash, "pages": []}),
+        encoding="utf-8",
+    )
+    (raw_dir / "changed.json").write_text(
+        json.dumps({"settings_hash": "different", "pages": []}),
+        encoding="utf-8",
+    )
+    (raw_dir / "legacy.json").write_text(
+        json.dumps({"pages": []}),
+        encoding="utf-8",
+    )
+
+    assert ocr_module.check_conversions(
+        docs_dir=docs_dir,
+        out_dir=out_dir,
+        model="test-model",
+        dpi=300,
+        fmt="jpeg",
+    ) == [
+        docs_dir / "changed.pdf",
+        docs_dir / "legacy.pdf",
+        docs_dir / "missing.pdf",
+    ]

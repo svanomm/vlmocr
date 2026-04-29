@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -18,6 +19,7 @@ from vlmocr.contract import (
     DEFAULT_OUT_DIR,
     build_raw_ocr_document,
     get_raw_ocr_dir,
+    validate_raw_ocr_document,
 )
 
 DEFAULT_OCR_MODEL = os.environ.get(
@@ -50,18 +52,91 @@ OCR_PROMPT = """
     """
 
 
+def build_ocr_settings(
+    *,
+    model: str = DEFAULT_OCR_MODEL,
+    dpi: int = DEFAULT_OCR_DPI,
+    fmt: str = DEFAULT_OCR_IMAGE_FORMAT,
+    prompt: str = OCR_PROMPT,
+    temperature: float = DEFAULT_VLM_TEMPERATURE,
+    max_tokens: int = DEFAULT_OCR_MAX_TOKENS,
+) -> dict[str, str | int | float]:
+    """Build the canonical OCR settings payload used for hashing."""
+    return {
+        "model": model,
+        "dpi": dpi,
+        "image_format": fmt,
+        "prompt": prompt,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+
+
+def hash_ocr_settings(
+    *,
+    model: str = DEFAULT_OCR_MODEL,
+    dpi: int = DEFAULT_OCR_DPI,
+    fmt: str = DEFAULT_OCR_IMAGE_FORMAT,
+    prompt: str = OCR_PROMPT,
+    temperature: float = DEFAULT_VLM_TEMPERATURE,
+    max_tokens: int = DEFAULT_OCR_MAX_TOKENS,
+) -> str:
+    """Return a stable hash for the OCR settings that affect output."""
+    serialized = json.dumps(
+        build_ocr_settings(
+            model=model,
+            dpi=dpi,
+            fmt=fmt,
+            prompt=prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        ),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _raw_ocr_matches_settings(raw_json_path: Path, *, settings_hash: str) -> bool:
+    """Return whether an existing raw OCR payload matches the current settings."""
+    if not raw_json_path.exists():
+        return False
+
+    try:
+        with open(raw_json_path, encoding="utf-8") as handle:
+            payload = validate_raw_ocr_document(json.load(handle))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return False
+
+    return payload["settings_hash"] == settings_hash
+
+
 def check_conversions(
     docs_dir: Path = DEFAULT_DOCS_DIR,
     out_dir: Path = DEFAULT_OUT_DIR,
+    *,
+    model: str = DEFAULT_OCR_MODEL,
+    dpi: int = DEFAULT_OCR_DPI,
+    fmt: str = DEFAULT_OCR_IMAGE_FORMAT,
+    prompt: str = OCR_PROMPT,
+    temperature: float = DEFAULT_VLM_TEMPERATURE,
+    max_tokens: int = DEFAULT_OCR_MAX_TOKENS,
 ) -> list[Path]:
     """Check which PDF files still need OCR conversion.
 
     Args:
         docs_dir: Directory containing input PDF files.
         out_dir: Base output directory for OCR artifacts.
+        model: Vision model identifier.
+        dpi: Render DPI.
+        fmt: Image format.
+        prompt: OCR prompt sent with each page.
+        temperature: Sampling temperature.
+        max_tokens: Maximum output tokens per page.
 
     Returns:
-        PDF paths that do not yet have raw OCR JSON output.
+        PDF paths that do not yet have raw OCR JSON output for the current settings.
     """
     raw_json_dir = get_raw_ocr_dir(out_dir)
     if not docs_dir.exists():
@@ -70,10 +145,20 @@ def check_conversions(
     raw_json_dir.mkdir(parents=True, exist_ok=True)
     pdf_files = sorted(docs_dir.glob("*.pdf"))
     needs_conversion: list[Path] = []
+    current_settings_hash = hash_ocr_settings(
+        model=model,
+        dpi=dpi,
+        fmt=fmt,
+        prompt=prompt,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
 
     for pdf_path in pdf_files:
         json_file = raw_json_dir / f"{pdf_path.stem}.json"
-        if not json_file.exists():
+        if not _raw_ocr_matches_settings(
+            json_file, settings_hash=current_settings_hash
+        ):
             needs_conversion.append(pdf_path)
 
     return needs_conversion
@@ -140,6 +225,8 @@ def _ocr_page(
     *,
     model: str = DEFAULT_OCR_MODEL,
     fmt: str = DEFAULT_OCR_IMAGE_FORMAT,
+    prompt: str = OCR_PROMPT,
+    temperature: float = DEFAULT_VLM_TEMPERATURE,
     max_tokens: int = DEFAULT_OCR_MAX_TOKENS,
 ) -> str:
     """Send a page image to a vision model and return markdown text.
@@ -149,6 +236,8 @@ def _ocr_page(
         base64_image: Base64-encoded page image.
         model: Model identifier.
         fmt: Image format.
+        prompt: OCR instructions to send with the page image.
+        temperature: Sampling temperature.
         max_tokens: Maximum output tokens per page.
 
     Returns:
@@ -161,7 +250,7 @@ def _ocr_page(
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": OCR_PROMPT},
+                    {"type": "text", "text": prompt},
                     {
                         "type": "image_url",
                         "image_url": {"url": f"data:{mime};base64,{base64_image}"},
@@ -169,7 +258,7 @@ def _ocr_page(
                 ],
             }
         ],
-        temperature=DEFAULT_VLM_TEMPERATURE,
+        temperature=temperature,
         max_tokens=max_tokens,
     )
     return response.choices[0].message.content or ""
@@ -184,6 +273,9 @@ def convert_file(
     model: str = DEFAULT_OCR_MODEL,
     dpi: int = DEFAULT_OCR_DPI,
     fmt: str = DEFAULT_OCR_IMAGE_FORMAT,
+    prompt: str = OCR_PROMPT,
+    temperature: float = DEFAULT_VLM_TEMPERATURE,
+    max_tokens: int = DEFAULT_OCR_MAX_TOKENS,
     max_workers: int = DEFAULT_OCR_MAX_WORKERS,
     max_retries: int = DEFAULT_OCR_MAX_RETRIES,
 ) -> Path:
@@ -197,6 +289,9 @@ def convert_file(
         model: Vision model identifier.
         dpi: Render DPI.
         fmt: Image format.
+        prompt: OCR instructions to send with each page.
+        temperature: Sampling temperature.
+        max_tokens: Maximum output tokens per page.
         max_workers: OCR worker thread count.
         max_retries: OCR retry attempts per page.
 
@@ -212,6 +307,14 @@ def convert_file(
 
     file_path = Path(file_path)
     output_name = out_name or file_path.stem
+    settings_hash = hash_ocr_settings(
+        model=model,
+        dpi=dpi,
+        fmt=fmt,
+        prompt=prompt,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
     with fitz.open(file_path) as doc:
         page_count = len(doc)
         page_images = [
@@ -229,6 +332,9 @@ def convert_file(
                     page_images[page_index],
                     model=model,
                     fmt=fmt,
+                    prompt=prompt,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
                 )
             except Exception as exc:
                 last_exc = exc
@@ -254,7 +360,8 @@ def convert_file(
         )
 
     result = build_raw_ocr_document(
-        [markdown for markdown in page_markdowns if markdown is not None]
+        [markdown for markdown in page_markdowns if markdown is not None],
+        settings_hash=settings_hash,
     )
     raw_ocr_dir = get_raw_ocr_dir(output_dir)
     raw_ocr_dir.mkdir(parents=True, exist_ok=True)
@@ -288,6 +395,9 @@ def ocr_documents(
     model: str = DEFAULT_OCR_MODEL,
     dpi: int = DEFAULT_OCR_DPI,
     fmt: str = DEFAULT_OCR_IMAGE_FORMAT,
+    prompt: str = OCR_PROMPT,
+    temperature: float = DEFAULT_VLM_TEMPERATURE,
+    max_tokens: int = DEFAULT_OCR_MAX_TOKENS,
     max_workers: int = DEFAULT_OCR_MAX_WORKERS,
     max_retries: int = DEFAULT_OCR_MAX_RETRIES,
 ) -> list[Path]:
@@ -300,13 +410,25 @@ def ocr_documents(
         model: Vision model identifier.
         dpi: Render DPI.
         fmt: Image format.
+        prompt: OCR instructions to send with each page.
+        temperature: Sampling temperature.
+        max_tokens: Maximum output tokens per page.
         max_workers: OCR worker thread count.
         max_retries: OCR retry attempts per page.
 
     Returns:
         Paths of written raw OCR JSON files.
     """
-    to_convert = check_conversions(docs_dir=docs_dir, out_dir=out_dir)
+    to_convert = check_conversions(
+        docs_dir=docs_dir,
+        out_dir=out_dir,
+        model=model,
+        dpi=dpi,
+        fmt=fmt,
+        prompt=prompt,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
     if not to_convert:
         print("No files need conversion. Exiting.")
         return []
@@ -325,6 +447,9 @@ def ocr_documents(
                 model=model,
                 dpi=dpi,
                 fmt=fmt,
+                prompt=prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
                 max_workers=max_workers,
                 max_retries=max_retries,
             )

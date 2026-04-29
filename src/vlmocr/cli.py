@@ -487,7 +487,22 @@ def _run_interactive_ocr(
         )
 
     try:
-        estimated_cost = estimate_cost.count_pages(docs_dir, output_fn=output_fn)
+        to_convert = ocr.check_conversions(
+            docs_dir=docs_dir,
+            out_dir=out_dir,
+            model=model,
+            dpi=dpi,
+            fmt=fmt,
+        )
+        if not to_convert:
+            output_fn("No files need conversion.")
+            return
+
+        estimated_cost = estimate_cost.count_pages_for_files(
+            to_convert,
+            output_fn=output_fn,
+            source_label=f"{docs_dir} (pending OCR)",
+        )
         if estimated_cost is None:
             return
 

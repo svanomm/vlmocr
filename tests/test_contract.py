@@ -18,9 +18,10 @@ from vlmocr.contract import (
 
 def test_build_raw_ocr_document_creates_sequential_pages() -> None:
     """Building raw OCR output should produce the canonical page schema."""
-    payload = build_raw_ocr_document(["# Page 1", "# Page 2"])
+    payload = build_raw_ocr_document(["# Page 1", "# Page 2"], settings_hash="abc123")
 
     assert payload == {
+        "settings_hash": "abc123",
         "pages": [
             {"index": 0, "markdown": "# Page 1"},
             {"index": 1, "markdown": "# Page 2"},
@@ -28,9 +29,22 @@ def test_build_raw_ocr_document_creates_sequential_pages() -> None:
     }
 
 
-def test_validate_raw_ocr_document_accepts_canonical_payload() -> None:
-    """The validator should accept the expected OCR schema."""
-    payload = {"pages": [{"index": 0, "markdown": "Page one."}]}
+def test_build_raw_ocr_document_can_include_settings_hash() -> None:
+    """Building raw OCR output should preserve the OCR settings hash when provided."""
+    payload = build_raw_ocr_document(["# Page 1"], settings_hash="abc123")
+
+    assert payload == {
+        "settings_hash": "abc123",
+        "pages": [{"index": 0, "markdown": "# Page 1"}],
+    }
+
+
+def test_validate_raw_ocr_document_accepts_settings_hash() -> None:
+    """The validator should preserve the optional OCR settings hash."""
+    payload = {
+        "settings_hash": "abc123",
+        "pages": [{"index": 0, "markdown": "Page one."}],
+    }
 
     assert validate_raw_ocr_document(payload) == payload
 
@@ -39,11 +53,13 @@ def test_validate_raw_ocr_document_accepts_canonical_payload() -> None:
     ("payload", "message"),
     [
         ([], "JSON object"),
-        ({}, "'pages' list"),
-        ({"pages": ["bad"]}, "must be an object"),
-        ({"pages": [{"markdown": "missing index"}]}, "integer 'index'"),
-        ({"pages": [{"index": 1, "markdown": "wrong order"}]}, "sequential indexes"),
-        ({"pages": [{"index": 0, "markdown": None}]}, "string 'markdown'"),
+        ({}, "string 'settings_hash'"),
+        ({"pages": []}, "string 'settings_hash'"),
+        ({"settings_hash": 123, "pages": []}, "string 'settings_hash'"),
+        ({"settings_hash": "abc123", "pages": ["bad"]}, "must be an object"),
+        ({"settings_hash": "abc123", "pages": [{"markdown": "missing index"}]}, "integer 'index'"),
+        ({"settings_hash": "abc123", "pages": [{"index": 1, "markdown": "wrong order"}]}, "sequential indexes"),
+        ({"settings_hash": "abc123", "pages": [{"index": 0, "markdown": None}]}, "string 'markdown'"),
     ],
 )
 def test_validate_raw_ocr_document_rejects_invalid_payloads(

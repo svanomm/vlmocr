@@ -33,6 +33,7 @@ class RawOcrPage(TypedDict):
 class RawOcrDocument(TypedDict):
     """The raw OCR document payload consumed by downstream conversion."""
 
+    settings_hash: str
     pages: list[RawOcrPage]
 
 
@@ -96,21 +97,25 @@ def validate_project_structure(
     ]
 
 
-def build_raw_ocr_document(page_markdowns: list[str]) -> RawOcrDocument:
+def build_raw_ocr_document(page_markdowns: list[str], *, settings_hash: str) -> RawOcrDocument:
     """Build the canonical raw OCR payload from page markdown strings.
 
     Args:
         page_markdowns: Page markdown in document order.
+        settings_hash: Hash of the OCR settings used to produce the pages.
 
     Returns:
         The canonical raw OCR payload with sequential page indexes.
     """
-    return {
+    payload: RawOcrDocument = {
+        "settings_hash": settings_hash,
         "pages": [
             {"index": page_index, "markdown": markdown}
             for page_index, markdown in enumerate(page_markdowns)
         ]
     }
+
+    return payload
 
 
 def validate_raw_ocr_document(payload: object) -> RawOcrDocument:
@@ -127,6 +132,12 @@ def validate_raw_ocr_document(payload: object) -> RawOcrDocument:
     """
     if not isinstance(payload, dict):
         raise ValueError("Raw OCR payload must be a JSON object.")
+
+    settings_hash = payload.get("settings_hash")
+    if not isinstance(settings_hash, str):
+        raise ValueError(
+            "Raw OCR payload must have a string 'settings_hash'."
+        )
 
     pages = payload.get("pages")
     if not isinstance(pages, list):
@@ -157,4 +168,4 @@ def validate_raw_ocr_document(payload: object) -> RawOcrDocument:
 
         validated_pages.append({"index": index, "markdown": markdown})
 
-    return {"pages": validated_pages}
+    return {"settings_hash": settings_hash, "pages": validated_pages}

@@ -84,7 +84,13 @@ def test_main_ocr_writes_raw_json_to_selected_out_dir(
     monkeypatch.setattr(
         cli.ocr,
         "_ocr_page",
-        lambda client, base64_image, model=None, fmt=None, max_tokens=None: "# Page 1",
+        lambda client,
+        base64_image,
+        model=None,
+        fmt=None,
+        prompt=None,
+        temperature=None,
+        max_tokens=None: "# Page 1",
     )
 
     cli.main(
@@ -102,6 +108,7 @@ def test_main_ocr_writes_raw_json_to_selected_out_dir(
     raw_json_path = out_dir / "json" / "raw" / "sample.json"
     assert raw_json_path.exists()
     assert json.loads(raw_json_path.read_text(encoding="utf-8")) == {
+        "settings_hash": cli.ocr.hash_ocr_settings(),
         "pages": [{"index": 0, "markdown": "# Page 1"}]
     }
 
@@ -116,6 +123,7 @@ def test_main_convert_uses_default_input_dir_and_writes_artifact_tree(
     (raw_dir / "sample.json").write_text(
         json.dumps(
             {
+                "settings_hash": cli.ocr.hash_ocr_settings(),
                 "pages": [
                     {"index": 0, "markdown": "# Title\nBody line."},
                     {"index": 1, "markdown": "## Section\nMore body."},
@@ -247,9 +255,17 @@ def test_launch_tui_ocr_default_options_skip_extra_questions(
 
     monkeypatch.setattr(cli, "DEFAULT_DOCS_DIR", docs_dir)
     monkeypatch.setattr(cli, "DEFAULT_OUT_DIR", out_dir)
+    monkeypatch.setattr(
+        cli.ocr,
+        "check_conversions",
+        lambda **kwargs: [docs_dir / "sample.pdf"],
+    )
 
-    def fake_count_pages(folder: Path, *, output_fn=print) -> float | None:
-        assert folder == docs_dir
+    def fake_count_pages_for_files(
+        pdf_files: list[Path], *, output_fn=print, source_label: str
+    ) -> float | None:
+        assert pdf_files == [docs_dir / "sample.pdf"]
+        assert source_label == f"{docs_dir} (pending OCR)"
         output_fn("Total estimated: $12.3400")
         return 12.34
 
@@ -257,7 +273,11 @@ def test_launch_tui_ocr_default_options_skip_extra_questions(
         captured.update(kwargs)
         return []
 
-    monkeypatch.setattr(cli.estimate_cost, "count_pages", fake_count_pages)
+    monkeypatch.setattr(
+        cli.estimate_cost,
+        "count_pages_for_files",
+        fake_count_pages_for_files,
+    )
     monkeypatch.setattr(cli.ocr, "ocr_documents", fake_ocr_documents)
 
     cli.launch_tui(
@@ -296,8 +316,15 @@ def test_launch_tui_ocr_requires_final_confirmation(
 
     monkeypatch.setattr(cli, "DEFAULT_DOCS_DIR", docs_dir)
     monkeypatch.setattr(cli, "DEFAULT_OUT_DIR", out_dir)
+    monkeypatch.setattr(
+        cli.ocr,
+        "check_conversions",
+        lambda **kwargs: [docs_dir / "sample.pdf"],
+    )
 
-    def fake_count_pages(folder: Path, *, output_fn=print) -> float | None:
+    def fake_count_pages_for_files(
+        pdf_files: list[Path], *, output_fn=print, source_label: str
+    ) -> float | None:
         output_fn("Total estimated: $99.9900")
         return 99.99
 
@@ -305,7 +332,11 @@ def test_launch_tui_ocr_requires_final_confirmation(
         ocr_called["value"] = True
         return []
 
-    monkeypatch.setattr(cli.estimate_cost, "count_pages", fake_count_pages)
+    monkeypatch.setattr(
+        cli.estimate_cost,
+        "count_pages_for_files",
+        fake_count_pages_for_files,
+    )
     monkeypatch.setattr(cli.ocr, "ocr_documents", fake_ocr_documents)
 
     cli.launch_tui(
@@ -331,9 +362,17 @@ def test_launch_tui_ocr_custom_options_still_use_default_directories(
 
     monkeypatch.setattr(cli, "DEFAULT_DOCS_DIR", docs_dir)
     monkeypatch.setattr(cli, "DEFAULT_OUT_DIR", out_dir)
+    monkeypatch.setattr(
+        cli.ocr,
+        "check_conversions",
+        lambda **kwargs: [docs_dir / "sample.pdf"],
+    )
 
-    def fake_count_pages(folder: Path, *, output_fn=print) -> float | None:
-        assert folder == docs_dir
+    def fake_count_pages_for_files(
+        pdf_files: list[Path], *, output_fn=print, source_label: str
+    ) -> float | None:
+        assert pdf_files == [docs_dir / "sample.pdf"]
+        assert source_label == f"{docs_dir} (pending OCR)"
         output_fn("Total estimated: $1.2300")
         return 1.23
 
@@ -341,7 +380,11 @@ def test_launch_tui_ocr_custom_options_still_use_default_directories(
         captured.update(kwargs)
         return []
 
-    monkeypatch.setattr(cli.estimate_cost, "count_pages", fake_count_pages)
+    monkeypatch.setattr(
+        cli.estimate_cost,
+        "count_pages_for_files",
+        fake_count_pages_for_files,
+    )
     monkeypatch.setattr(cli.ocr, "ocr_documents", fake_ocr_documents)
 
     cli.launch_tui(
@@ -370,6 +413,56 @@ def test_launch_tui_ocr_custom_options_still_use_default_directories(
     assert captured["fmt"] == "jpeg"
     assert captured["max_workers"] == 4
     assert captured["max_retries"] == 2
+
+
+def test_launch_tui_ocr_skips_cost_estimate_when_no_files_need_conversion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The launcher should stop before estimation when OCR has nothing pending."""
+    docs_dir = tmp_path / "docs"
+    out_dir = tmp_path / "converted"
+    docs_dir.mkdir()
+    prompts: list[str] = []
+    output_lines: list[str] = []
+    estimate_called = {"value": False}
+    ocr_called = {"value": False}
+    responses = iter(["2", "y", "", "6"])
+
+    monkeypatch.setattr(cli, "DEFAULT_DOCS_DIR", docs_dir)
+    monkeypatch.setattr(cli, "DEFAULT_OUT_DIR", out_dir)
+    monkeypatch.setattr(cli.ocr, "check_conversions", lambda **kwargs: [])
+
+    def fake_count_pages_for_files(
+        pdf_files: list[Path], *, output_fn=print, source_label: str
+    ) -> float | None:
+        estimate_called["value"] = True
+        return 0.0
+
+    def fake_ocr_documents(**kwargs: object) -> list[Path]:
+        ocr_called["value"] = True
+        return []
+
+    monkeypatch.setattr(
+        cli.estimate_cost,
+        "count_pages_for_files",
+        fake_count_pages_for_files,
+    )
+    monkeypatch.setattr(cli.ocr, "ocr_documents", fake_ocr_documents)
+
+    cli.launch_tui(
+        input_fn=lambda prompt: prompts.append(prompt) or next(responses),
+        output_fn=output_lines.append,
+    )
+
+    assert prompts == [
+        "Select an option [1-6]: ",
+        "Use default OCR options? [Y/n]: ",
+        "Press Enter to return to the menu...",
+        "Select an option [1-6]: ",
+    ]
+    assert estimate_called["value"] is False
+    assert ocr_called["value"] is False
+    assert any("No files need conversion." in line for line in output_lines)
 
 
 def test_launch_tui_convert_uses_default_directories(
