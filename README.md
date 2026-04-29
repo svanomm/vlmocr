@@ -2,12 +2,12 @@
 
 `vlmocr` turns PDFs into clean, reusable text files.
 
-In plain terms: it takes a PDF, renders each page as an image, asks a vision-language model (VLM) to read the page, and then saves the result as:
+The pipeline is simple: it takes a PDF, renders each page as an image, uses a vision-language model (VLM) to extract structured data, and then saves the result as:
 
 - Markdown for humans to read and edit
 - JSON for scripts, pipelines, or downstream tools
 
-This repo is useful when you have scanned papers, reports, manuals, or image-heavy PDFs that are hard to search, copy from, or repurpose.
+This repo is useful when you have scanned papers, reports, manuals, or image-heavy PDFs that are hard to search, copy from, or repurpose. Any math in the paper gets converted to LaTeX, and figures/charts are given plain-text descriptions.
 
 Under the hood, `vlmocr` sends page images to OpenRouter-served VLMs, validates the raw OCR contract, and converts the results into cleaned Markdown and cleaned JSON. We currently use Gemini 3.1 Flash Lite for OCR based on its very high performance on [socOCRBench](https://noahdasanaike.github.io/posts/sococrbench.html) and cost effectiveness. With current API pricing, I am seeing an average of around **$1.50 per 1000 pages** of OCR.
 
@@ -44,7 +44,7 @@ That tends to make them better at:
 - describing non-text visuals such as figures and charts
 - keeping footnotes connected to the places where they are referenced
 
-That does not mean VLMs are always better in every situation. They are usually slower than traditional OCR and they cost API money to run. But for messy, complex, or highly structured documents, they often produce output that needs much less manual cleanup afterward. That tradeoff is the main reason this repo is built around VLM-based OCR.
+An additional benefit of using a general-purpose multimodal VLM like Gemini is that you can prompt it with custom instructions: write text descriptions of charts, convert math to LaTeX, and much more. You can easily change the prompt underlying `vlmocr` to suit your preferences, and can also experiment with model parameters such as temperature (which defaults to 0.0).
 
 ## Markdown conventions used by this repo
 
@@ -64,21 +64,13 @@ The matching footnote text is wrapped like this:
 <note num="1">Stored at 4 C until analysis.</note>
 ```
 
-This is useful because it keeps a clear machine-readable connection between the footnote marker in the main text and the footnote content itself.
-
-That helps with:
-
-- preserving citations and notes during cleanup
-- making downstream parsing simpler and more reliable
-- avoiding guesswork when a document has many repeated footnote numbers or dense page layouts
-
-By default, `vlmocr convert` expands those references inline so the cleaned Markdown becomes easier for non-technical readers and text-processing tools to follow, for example:
+This is useful because it keeps a clear machine-readable connection between the footnote marker in the main text and the footnote content itself. By default, `vlmocr convert` expands those references inline so the cleaned Markdown becomes easier for non-technical readers and text-processing tools to follow, for example:
 
 ```md
 The sample was preserved at low temperature [Footnote 1: Stored at 4 C until analysis].
 ```
 
-If you want to keep the original `<ref>` and `<note>` tags instead, use `--no-inject-footnotes`.
+If you want to keep the original `<ref>` and `<note>` tags instead, use `--no-inject-footnotes`. You could also customize `vlmocr` to move all footnote text to the bottom of the document, for example.
 
 ### Figure descriptions
 
@@ -112,7 +104,7 @@ The goal is not only to extract text, but to preserve as much of the document's 
 ## Requirements
 
 - Python 3.12+
-- `uv`
+- [`uv`](https://docs.astral.sh/uv/)
 - `OPENROUTER_API_KEY` for OCR commands
 
 Install the repo environment:
@@ -261,11 +253,6 @@ uv run ruff check --fix
 uv run ruff format
 uv run pytest
 ```
-
-## Notes
-
-- OCR cost estimation is intentionally OCR-only.
-- Repeated-line cleanup is optional and is designed to avoid over-removing lines in smaller documents.
 
 ## License
 MIT License.
