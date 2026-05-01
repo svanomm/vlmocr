@@ -55,7 +55,7 @@ The OCR prompt in this repo asks the model to produce Markdown, but it also asks
 Inline footnote references are wrapped like this:
 
 ```md
-The sample was preserved at low temperature <ref num="1"/>.
+The sample was preserved at low temperature. <ref num="1"/>
 ```
 
 The matching footnote text is wrapped like this:
@@ -67,7 +67,7 @@ The matching footnote text is wrapped like this:
 This is useful because it keeps a clear machine-readable connection between the footnote marker in the main text and the footnote content itself. By default, `vlmocr convert` expands those references inline so the cleaned Markdown becomes easier for non-technical readers and text-processing tools to follow, for example:
 
 ```md
-The sample was preserved at low temperature [Footnote 1: Stored at 4 C until analysis].
+The sample was preserved at low temperature. [Footnote 1: Stored at 4 C until analysis.]
 ```
 
 If you want to keep the original `<ref>` and `<note>` tags instead, use `--no-inject-footnotes`. You could also customize `vlmocr` to move all footnote text to the bottom of the document, for example.
