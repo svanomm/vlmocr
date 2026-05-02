@@ -9,24 +9,11 @@ The pipeline is simple: it takes a PDF, renders each page as an image, uses a vi
 
 This repo is useful when you have scanned papers, reports, manuals, or image-heavy PDFs that are hard to search, copy from, or repurpose. Any math in the paper gets converted to LaTeX, and figures/charts are given plain-text descriptions.
 
-Under the hood, `vlmocr` sends page images to OpenRouter-served VLMs, validates the raw OCR contract, and converts the results into cleaned Markdown and cleaned JSON. We currently use Gemini 3.1 Flash Lite for OCR based on its very high performance on [socOCRBench](https://noahdasanaike.github.io/posts/sococrbench.html) and cost effectiveness. With current API pricing, I am seeing an average of around **$1.50 per 1000 pages** of OCR.
-
-## What OCR means
-
-OCR stands for "optical character recognition." It is the process of turning text that appears inside an image or scanned document into actual machine-readable text.
-
-Without OCR, a PDF scan is often just a stack of pictures. You can look at it, but searching it, copying from it, or feeding it into another tool is unreliable or impossible.
-
-With OCR, the same document becomes much more useful:
-
-- text can be searched
-- sections can be copied and edited
-- tables and headings can be preserved in a structured format
-- downstream tools can process the content automatically
+Under the hood, `vlmocr` splits your PDFs into page images and sends them to OpenRouter-served VLMs, then converts the results into cleaned Markdown. Gemini 3.1 Flash Lite is the default model based on its very high performance on [socOCRBench](https://noahdasanaike.github.io/posts/sococrbench.html) and cost effectiveness. With current API pricing, I am seeing an average of around **$1.50 per 1000 pages** of OCR.
 
 ## Why this project uses VLMs for OCR
 
-Traditional OCR systems are usually strongest at reading plain text characters on clean, simple pages. They can work well for straightforward scans, but they often struggle when a page includes things like:
+Traditional OCR systems struggle when a page includes things like:
 
 - multi-column layouts
 - tables
@@ -34,9 +21,7 @@ Traditional OCR systems are usually strongest at reading plain text characters o
 - charts, diagrams, or figures
 - mixed formatting such as headings, bold text, code, or math
 
-VLMs are often better for this kind of document OCR because they do not only identify characters one by one. They also look at the whole page and reason about layout and meaning.
-
-That tends to make them better at:
+VLMs are better for this kind of document OCR because they do not only identify characters one by one, but instead look at the whole page and reason about layout and meaning. This makes them better at:
 
 - preserving reading order
 - recognizing headings and document structure
@@ -44,7 +29,7 @@ That tends to make them better at:
 - describing non-text visuals such as figures and charts
 - keeping footnotes connected to the places where they are referenced
 
-An additional benefit of using a general-purpose multimodal VLM like Gemini is that you can prompt it with custom instructions: write text descriptions of charts, convert math to LaTeX, and much more. You can easily change the prompt underlying `vlmocr` to suit your preferences, and can also experiment with model parameters such as temperature (which defaults to 0.0).
+An additional benefit of using a general-purpose multimodal VLM is that you can prompt it with custom instructions: write text descriptions of charts, convert math to LaTeX, and much more. You can easily change the prompt underlying `vlmocr` to suit your preferences, and can also experiment with model parameters such as temperature (which defaults to 0.0).
 
 ## Markdown conventions used by this repo
 
@@ -55,7 +40,7 @@ The OCR prompt in this repo asks the model to produce Markdown, but it also asks
 Inline footnote references are wrapped like this:
 
 ```md
-The sample was preserved at low temperature. <ref num="1"/>
+The sample was preserved at low temperature.<ref num="1"/>
 ```
 
 The matching footnote text is wrapped like this:
@@ -123,78 +108,16 @@ OpenRouter setup for first-time users:
 OPENROUTER_API_KEY=your_key_here
 ```
 
-You can also pass the key directly with `--api-key`, but the `.env` file is the simplest repeatable setup.
-
 ## Commands
-
-First-run interactive launcher:
 
 ```bash
 uv run vlmocr
 ```
 
-This opens a terminal menu that lets you initialize the workspace, inspect the expected directory layout, and run the available commands with prompts.
+This opens a terminal interface that lets you initialize the workspace, inspect the expected directory layout, and run the available commands with prompts.
 It also explains where to create an OpenRouter API key and how to store it before you run OCR.
 
-Recommended first-run setup:
-
-```bash
-uv run vlmocr init
-```
-
-`init` creates the default project structure and prints the next commands to run:
-
-- `docs`
-- `converted/json/raw`
-- `converted/json`
-- `converted/md`
-- `converted/md/table of contents`
-
-The `init` output also tells you to create an OpenRouter API key at `https://openrouter.ai/keys` and store it as `OPENROUTER_API_KEY` in a `.env` file in the project root before running OCR.
-
-Local script entry point:
-
-```bash
-uv run vlmocr init
-uv run vlmocr ocr --docs-dir docs --out-dir converted
-uv run vlmocr convert --input-dir converted/json/raw --out-dir converted
-uv run vlmocr estimate-cost --docs-dir docs
-```
-
-Module execution:
-
-```bash
-uv run -m vlmocr init
-uv run -m vlmocr ocr --docs-dir docs --out-dir converted
-uv run -m vlmocr convert --input-dir converted/json/raw --out-dir converted
-uv run -m vlmocr estimate-cost --docs-dir docs
-```
-
-Release-mode `uvx` examples:
-
-```bash
-uvx --from git+https://github.com/<owner>/<repo>@v0.1.0 vlmocr estimate-cost --docs-dir docs
-uvx --from git+https://github.com/<owner>/<repo>@v0.1.0 vlmocr ocr --docs-dir docs --out-dir converted
-uvx --from git+https://github.com/<owner>/<repo>@v0.1.0 vlmocr convert --input-dir converted/json/raw --out-dir converted
-```
-
 ## Defaults and options
-
-Defaults:
-
-- `--docs-dir docs`
-- `--out-dir converted`
-- `vlmocr` with no subcommand opens the interactive launcher
-- `convert` without `--input-dir` reads from `<out-dir>/json/raw`
-
-OCR options:
-
-- `--api-key`
-- `--model`
-- `--dpi`
-- `--format {png,jpeg}`
-- `--max-workers`
-- `--max-retries`
 
 Environment overrides:
 
@@ -205,54 +128,6 @@ Environment overrides:
 - `VLMOCR_MAX_TOKENS`
 - `VLMOCR_MAX_WORKERS`
 - `VLMOCR_MAX_RETRIES`
-
-If `OPENROUTER_API_KEY` is missing, OCR fails with a clear error that tells you where to create the key and how to provide it through `.env`, environment variables, or `--api-key`.
-
-## Output tree
-
-Given `--out-dir <root>`, the package writes:
-
-```text
-<root>/json/raw/<name>.json
-<root>/json/<name>.json
-<root>/md/<name>.md
-<root>/md/table of contents/<name>_toc.md
-```
-
-`estimate-cost` does not write output artifacts. It only inspects PDFs under `--docs-dir` and prints OCR-only cost estimates.
-
-## Raw OCR schema
-
-Raw OCR JSON must match this schema exactly:
-
-```json
-{
-  "pages": [
-    {
-      "index": 0,
-      "markdown": "# Page 1 markdown"
-    }
-  ]
-}
-```
-
-Rules:
-
-- `pages` is an ordered array
-- each `index` is an integer
-- indexes are sequential starting at `0`
-- each `markdown` value is a string
-
-`convert` validates this contract and rejects malformed or invalid raw input.
-If the expected raw OCR input directory does not exist yet, the CLI now explains how to run `vlmocr init` and `vlmocr ocr` instead of showing a traceback.
-
-## Development checks
-
-```bash
-uv run ruff check --fix
-uv run ruff format
-uv run pytest
-```
 
 ## License
 MIT License.
