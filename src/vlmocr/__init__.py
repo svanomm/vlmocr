@@ -1,4 +1,4 @@
-"""Standalone OCR and conversion package for the Skill Search spin-out."""
+"""OCR and conversion package."""
 
 __all__ = [
     "cli",
