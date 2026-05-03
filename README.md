@@ -2,7 +2,7 @@
 
 `vlmocr` turns PDFs into clean, reusable text files.
 
-The pipeline is simple: it takes a PDF, renders each page as an image, uses a vision-language model (VLM) to extract structured data, and then saves the result as:
+The pipeline is simple: it takes a PDF, renders each page as an image, uses a vision-language model (VLM) to extract structured data, and then saves the result locally as:
 
 - Markdown for humans to read and edit
 - JSON for scripts, pipelines, or downstream tools
