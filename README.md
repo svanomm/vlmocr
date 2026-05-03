@@ -11,6 +11,8 @@ This repo is useful when you have scanned papers, reports, manuals, or image-hea
 
 Under the hood, `vlmocr` splits your PDFs into page images and sends them to OpenRouter-served VLMs, then converts the results into cleaned Markdown. Gemini 3.1 Flash Lite is the default model based on its very high performance on [socOCRBench](https://noahdasanaike.github.io/posts/sococrbench.html) and cost effectiveness. With current API pricing, I am seeing an average of around **$1.50 per 1000 pages** of OCR.
 
+(Want to test out `vlmocr` for free? Try selecting [a free model from OpenRouter](https://openrouter.ai/models?output_modalities=text&input_modalities=image&max_price=0)!
+
 ## Why this project uses VLMs for OCR
 
 Traditional OCR systems struggle when a page includes things like:
