@@ -212,3 +212,34 @@ def test_check_conversions_skips_only_matching_settings_hash(tmp_path: Path) -> 
         docs_dir / "legacy.pdf",
         docs_dir / "missing.pdf",
     ]
+
+
+def test_read_and_write_ocr_prompt_round_trip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The OCR prompt helpers should read and write markdown prompt text."""
+    prompt_path = tmp_path / "ocr_prompt.md"
+    prompt_path.write_text("Prompt one.\n", encoding="utf-8")
+    monkeypatch.setattr(ocr_module, "OCR_PROMPT_PATH", prompt_path)
+
+    assert ocr_module.read_ocr_prompt() == "Prompt one."
+
+    ocr_module.write_ocr_prompt("Prompt two")
+
+    assert prompt_path.read_text(encoding="utf-8") == "Prompt two\n"
+    assert ocr_module.read_ocr_prompt() == "Prompt two"
+
+
+def test_hash_ocr_settings_changes_when_prompt_file_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Changing the prompt markdown should change the OCR settings hash."""
+    prompt_path = tmp_path / "ocr_prompt.md"
+    prompt_path.write_text("Prompt one.\n", encoding="utf-8")
+    monkeypatch.setattr(ocr_module, "OCR_PROMPT_PATH", prompt_path)
+
+    first_hash = ocr_module.hash_ocr_settings(model="test-model", dpi=300, fmt="jpeg")
+    ocr_module.write_ocr_prompt("Prompt two")
+    second_hash = ocr_module.hash_ocr_settings(model="test-model", dpi=300, fmt="jpeg")
+
+    assert first_hash != second_hash

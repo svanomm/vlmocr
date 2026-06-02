@@ -223,7 +223,7 @@ def test_launch_tui_can_run_init_flow(
     """The interactive launcher should let users initialize a workspace."""
     docs_dir = tmp_path / "docs"
     out_dir = tmp_path / "converted"
-    responses = iter(["1", "", "6"])
+    responses = iter(["1", "", "7"])
     output_lines: list[str] = []
 
     monkeypatch.setattr(cli, "DEFAULT_DOCS_DIR", docs_dir)
@@ -250,7 +250,7 @@ def test_launch_tui_ocr_default_options_skip_extra_questions(
     docs_dir.mkdir()
     prompts: list[str] = []
     output_lines: list[str] = []
-    responses = iter(["2", "y", "y", "", "6"])
+    responses = iter(["2", "y", "y", "", "7"])
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(cli, "DEFAULT_DOCS_DIR", docs_dir)
@@ -286,11 +286,11 @@ def test_launch_tui_ocr_default_options_skip_extra_questions(
     )
 
     assert prompts == [
-        "Select an option [1-6]: ",
+        "Select an option [1-7]: ",
         "Use default OCR options? [Y/n]: ",
         "Proceed with OCR using the estimated cost above? [y/N]: ",
         "Press Enter to return to the menu...",
-        "Select an option [1-6]: ",
+        "Select an option [1-7]: ",
     ]
     assert any("Total estimated: $12.3400" in line for line in output_lines)
     assert captured["docs_dir"] == docs_dir
@@ -311,7 +311,7 @@ def test_launch_tui_ocr_requires_final_confirmation(
     out_dir = tmp_path / "converted"
     docs_dir.mkdir()
     output_lines: list[str] = []
-    responses = iter(["2", "y", "n", "", "6"])
+    responses = iter(["2", "y", "n", "", "7"])
     ocr_called = {"value": False}
 
     monkeypatch.setattr(cli, "DEFAULT_DOCS_DIR", docs_dir)
@@ -357,7 +357,7 @@ def test_launch_tui_ocr_custom_options_still_use_default_directories(
     out_dir = tmp_path / "converted"
     docs_dir.mkdir()
     prompts: list[str] = []
-    responses = iter(["2", "n", "test-key", "openai/gpt-4.1-mini", "200", "jpeg", "4", "2", "y", "", "6"])
+    responses = iter(["2", "n", "test-key", "openai/gpt-4.1-mini", "200", "jpeg", "4", "2", "y", "", "7"])
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(cli, "DEFAULT_DOCS_DIR", docs_dir)
@@ -393,7 +393,7 @@ def test_launch_tui_ocr_custom_options_still_use_default_directories(
     )
 
     assert prompts == [
-        "Select an option [1-6]: ",
+        "Select an option [1-7]: ",
         "Use default OCR options? [Y/n]: ",
         "OpenRouter API key (leave blank to use OPENROUTER_API_KEY or a .env file in the project root): ",
         f"Model [{cli.ocr.DEFAULT_OCR_MODEL}]: ",
@@ -403,7 +403,7 @@ def test_launch_tui_ocr_custom_options_still_use_default_directories(
         f"Max retries [{cli.ocr.DEFAULT_OCR_MAX_RETRIES}]: ",
         "Proceed with OCR using the estimated cost above? [y/N]: ",
         "Press Enter to return to the menu...",
-        "Select an option [1-6]: ",
+        "Select an option [1-7]: ",
     ]
     assert captured["docs_dir"] == docs_dir
     assert captured["out_dir"] == out_dir
@@ -426,7 +426,7 @@ def test_launch_tui_ocr_skips_cost_estimate_when_no_files_need_conversion(
     output_lines: list[str] = []
     estimate_called = {"value": False}
     ocr_called = {"value": False}
-    responses = iter(["2", "y", "", "6"])
+    responses = iter(["2", "y", "", "7"])
 
     monkeypatch.setattr(cli, "DEFAULT_DOCS_DIR", docs_dir)
     monkeypatch.setattr(cli, "DEFAULT_OUT_DIR", out_dir)
@@ -455,10 +455,10 @@ def test_launch_tui_ocr_skips_cost_estimate_when_no_files_need_conversion(
     )
 
     assert prompts == [
-        "Select an option [1-6]: ",
+        "Select an option [1-7]: ",
         "Use default OCR options? [Y/n]: ",
         "Press Enter to return to the menu...",
-        "Select an option [1-6]: ",
+        "Select an option [1-7]: ",
     ]
     assert estimate_called["value"] is False
     assert ocr_called["value"] is False
@@ -473,7 +473,7 @@ def test_launch_tui_convert_uses_default_directories(
     out_dir = tmp_path / "converted"
     prompts: list[str] = []
     captured: dict[str, object] = {}
-    responses = iter(["3", "y", "n", "", "6"])
+    responses = iter(["3", "y", "n", "", "7"])
 
     monkeypatch.setattr(cli, "DEFAULT_DOCS_DIR", docs_dir)
     monkeypatch.setattr(cli, "DEFAULT_OUT_DIR", out_dir)
@@ -490,11 +490,11 @@ def test_launch_tui_convert_uses_default_directories(
     )
 
     assert prompts == [
-        "Select an option [1-6]: ",
+        "Select an option [1-7]: ",
         "Remove repeated header/footer lines [y/N]: ",
         "Inject footnotes inline [Y/n]: ",
         "Press Enter to return to the menu...",
-        "Select an option [1-6]: ",
+        "Select an option [1-7]: ",
     ]
     assert captured["input_dir"] == out_dir / "json" / "raw"
     assert captured["out_dir"] == out_dir
@@ -510,7 +510,7 @@ def test_launch_tui_validate_uses_default_directories(
     out_dir = tmp_path / "converted"
     prompts: list[str] = []
     captured: dict[str, Path] = {}
-    responses = iter(["4", "", "6"])
+    responses = iter(["4", "", "7"])
 
     monkeypatch.setattr(cli, "DEFAULT_DOCS_DIR", docs_dir)
     monkeypatch.setattr(cli, "DEFAULT_OUT_DIR", out_dir)
@@ -527,12 +527,70 @@ def test_launch_tui_validate_uses_default_directories(
     )
 
     assert prompts == [
-        "Select an option [1-6]: ",
+        "Select an option [1-7]: ",
         "Press Enter to return to the menu...",
-        "Select an option [1-6]: ",
+        "Select an option [1-7]: ",
     ]
     assert captured["docs_dir"] == docs_dir
     assert captured["out_dir"] == out_dir
+
+
+def test_launch_tui_show_ocr_prompt_displays_file_without_editing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The prompt menu option should display current prompt text and leave it unchanged."""
+    prompt_file = tmp_path / "ocr_prompt.md"
+    prompt_file.write_text("Original prompt line.\n", encoding="utf-8")
+    prompts: list[str] = []
+    output_lines: list[str] = []
+    responses = iter(["6", "n", "", "7"])
+
+    monkeypatch.setattr(cli.ocr, "OCR_PROMPT_PATH", prompt_file)
+
+    cli.launch_tui(
+        input_fn=lambda prompt: prompts.append(prompt) or next(responses),
+        output_fn=output_lines.append,
+    )
+
+    assert prompt_file.read_text(encoding="utf-8") == "Original prompt line.\n"
+    assert prompts == [
+        "Select an option [1-7]: ",
+        "Edit OCR prompt now [y/N]: ",
+        "Press Enter to return to the menu...",
+        "Select an option [1-7]: ",
+    ]
+    assert any("OCR prompt file:" in line for line in output_lines)
+    assert any("Original prompt line." in line for line in output_lines)
+
+
+def test_launch_tui_show_ocr_prompt_can_edit_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The prompt menu option should save edited prompt text back to disk."""
+    prompt_file = tmp_path / "ocr_prompt.md"
+    prompt_file.write_text("Original prompt line.\n", encoding="utf-8")
+    prompts: list[str] = []
+    output_lines: list[str] = []
+    responses = iter(["6", "y", "First line", "Second line", "END", "", "7"])
+
+    monkeypatch.setattr(cli.ocr, "OCR_PROMPT_PATH", prompt_file)
+
+    cli.launch_tui(
+        input_fn=lambda prompt: prompts.append(prompt) or next(responses),
+        output_fn=output_lines.append,
+    )
+
+    assert prompt_file.read_text(encoding="utf-8") == "First line\nSecond line\n"
+    assert prompts == [
+        "Select an option [1-7]: ",
+        "Edit OCR prompt now [y/N]: ",
+        "prompt> ",
+        "prompt> ",
+        "prompt> ",
+        "Press Enter to return to the menu...",
+        "Select an option [1-7]: ",
+    ]
+    assert any("Saved OCR prompt to" in line for line in output_lines)
 
 
 def test_main_ocr_missing_api_key_shows_setup_instructions(

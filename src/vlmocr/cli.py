@@ -168,7 +168,8 @@ def _render_menu(*, ansi_enabled: bool) -> str:
         "[3] Convert raw OCR JSON",
         "[4] Validate current structure",
         "[5] Show quickstart",
-        "[6] Quit",
+        "[6] Show/edit OCR prompt",
+        "[7] Quit",
         "",
         "tip: press Ctrl+C at any prompt to leave the launcher.",
     ]
@@ -533,6 +534,50 @@ def _run_interactive_ocr(
         )
 
 
+def _show_or_edit_ocr_prompt(
+    *,
+    input_fn: InputFunc,
+    output_fn: OutputFunc,
+) -> None:
+    prompt_path = ocr.get_ocr_prompt_path()
+
+    try:
+        prompt_text = ocr.read_ocr_prompt(prompt_path)
+    except ValueError as exc:
+        output_fn(str(exc))
+        return
+
+    output_fn(f"OCR prompt file: {prompt_path}")
+    output_fn("----- begin ocr_prompt.md -----")
+    output_fn(prompt_text)
+    output_fn("----- end ocr_prompt.md -----")
+
+    if not _prompt_bool(input_fn, "Edit OCR prompt now", default=False):
+        return
+
+    output_fn("Enter updated OCR prompt markdown one line at a time.")
+    output_fn("When finished, enter a single line containing END.")
+    edited_lines: list[str] = []
+    while True:
+        line = input_fn("prompt> ")
+        if line.strip() == "END":
+            break
+        edited_lines.append(line)
+
+    updated_prompt = "\n".join(edited_lines).strip()
+    if not updated_prompt:
+        output_fn("OCR prompt update cancelled because the new prompt was empty.")
+        return
+
+    try:
+        ocr.write_ocr_prompt(updated_prompt, prompt_path=prompt_path)
+    except ValueError as exc:
+        output_fn(str(exc))
+        return
+
+    output_fn(f"Saved OCR prompt to {prompt_path}.")
+
+
 def launch_tui(
     *,
     input_fn: InputFunc = input,
@@ -549,7 +594,7 @@ def launch_tui(
         output_fn(_render_menu(ansi_enabled=ansi_enabled))
 
         try:
-            choice = input_fn("Select an option [1-6]: ").strip()
+            choice = input_fn("Select an option [1-7]: ").strip()
         except (EOFError, KeyboardInterrupt):
             output_fn("")
             output_fn(_render_status_message("Exiting vlmocr.", ansi_enabled=ansi_enabled))
@@ -618,6 +663,11 @@ def launch_tui(
             continue
 
         if choice == "6":
+            _show_or_edit_ocr_prompt(input_fn=input_fn, output_fn=output_fn)
+            _pause(input_fn)
+            continue
+
+        if choice == "7":
             output_fn(_render_status_message("Exiting vlmocr.", ansi_enabled=ansi_enabled))
             return
 
@@ -627,7 +677,7 @@ def launch_tui(
 
         output_fn(
             _render_status_message(
-                "Please choose a menu option from 1 to 6.",
+                "Please choose a menu option from 1 to 7.",
                 ansi_enabled=ansi_enabled,
             )
         )

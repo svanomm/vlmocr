@@ -32,24 +32,52 @@ DEFAULT_OCR_MAX_TOKENS = int(os.environ.get("VLMOCR_MAX_TOKENS", "4096"))
 DEFAULT_OCR_MAX_WORKERS = int(os.environ.get("VLMOCR_MAX_WORKERS", "4"))
 DEFAULT_OCR_MAX_RETRIES = int(os.environ.get("VLMOCR_MAX_RETRIES", "3"))
 
-OCR_PROMPT = """
-    This image is one page of a document. Extract the content of the page verbatim
-        and convert it to Markdown.
-    Convert tables into standard Markdown table syntax. For complex layouts you may use HTML syntax if necessary.
-    Convert section headings to Markdown headers, preserving hierarchy (e.g., #, ##, ###).
-    Preserve bold/italic formatting with Markdown syntax.
-    Merge line-wrapped text and undo hyphenation only when caused by line breaks.
-    Preserve reading order for multi-column layouts.
-    Convert math to LaTeX: $$ for display math, $ for inline math.
-    Wrap code snippets in triple backticks with language hints when clear.
-    For figures, charts, diagrams, or images, write a detailed description
-        wrapped in <image> tags (e.g., <image>Description...</image>);
-        preserve figure captions as text.
-    Wrap inline footnote references in <ref> tags, e.g. <ref num="1"/>.
-    Wrap footnote text in <note> tags with a `num` attribute, e.g. <note num="1">Footnote text here.</note>
-    Remove only repeated running headers/footers and standalone page numbers; keep content-bearing metadata.
-    Output only the Markdown, no commentary or summaries.
-    """
+OCR_PROMPT_PATH = Path(__file__).with_name("ocr_prompt.md")
+
+
+def get_ocr_prompt_path() -> Path:
+    """Return the canonical markdown file path for OCR prompt instructions."""
+    return OCR_PROMPT_PATH
+
+
+def read_ocr_prompt(prompt_path: Path | None = None) -> str:
+    """Read OCR prompt instructions from the markdown prompt file."""
+    target_path = prompt_path or OCR_PROMPT_PATH
+
+    try:
+        prompt_text = target_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"OCR prompt file not found: {target_path}") from exc
+
+    normalized_prompt = prompt_text.strip()
+    if not normalized_prompt:
+        raise ValueError(f"OCR prompt file is empty: {target_path}")
+
+    return normalized_prompt
+
+
+def write_ocr_prompt(prompt: str, prompt_path: Path | None = None) -> None:
+    """Write OCR prompt instructions to the markdown prompt file."""
+    normalized_prompt = prompt.strip()
+    if not normalized_prompt:
+        raise ValueError("OCR prompt cannot be empty.")
+
+    target_path = prompt_path or OCR_PROMPT_PATH
+    target_path.write_text(f"{normalized_prompt}\n", encoding="utf-8")
+
+
+def _resolve_prompt(prompt: str | None) -> str:
+    """Resolve prompt override or fallback to the markdown prompt file."""
+    if prompt is None:
+        return read_ocr_prompt()
+
+    normalized_prompt = prompt.strip()
+    if not normalized_prompt:
+        raise ValueError("OCR prompt cannot be empty.")
+    return normalized_prompt
+
+
+OCR_PROMPT = read_ocr_prompt()
 
 
 def build_ocr_settings(
@@ -57,16 +85,17 @@ def build_ocr_settings(
     model: str = DEFAULT_OCR_MODEL,
     dpi: int = DEFAULT_OCR_DPI,
     fmt: str = DEFAULT_OCR_IMAGE_FORMAT,
-    prompt: str = OCR_PROMPT,
+    prompt: str | None = None,
     temperature: float = DEFAULT_VLM_TEMPERATURE,
     max_tokens: int = DEFAULT_OCR_MAX_TOKENS,
 ) -> dict[str, str | int | float]:
     """Build the canonical OCR settings payload used for hashing."""
+    resolved_prompt = _resolve_prompt(prompt)
     return {
         "model": model,
         "dpi": dpi,
         "image_format": fmt,
-        "prompt": prompt,
+        "prompt": resolved_prompt,
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
@@ -77,7 +106,7 @@ def hash_ocr_settings(
     model: str = DEFAULT_OCR_MODEL,
     dpi: int = DEFAULT_OCR_DPI,
     fmt: str = DEFAULT_OCR_IMAGE_FORMAT,
-    prompt: str = OCR_PROMPT,
+    prompt: str | None = None,
     temperature: float = DEFAULT_VLM_TEMPERATURE,
     max_tokens: int = DEFAULT_OCR_MAX_TOKENS,
 ) -> str:
@@ -119,7 +148,7 @@ def check_conversions(
     model: str = DEFAULT_OCR_MODEL,
     dpi: int = DEFAULT_OCR_DPI,
     fmt: str = DEFAULT_OCR_IMAGE_FORMAT,
-    prompt: str = OCR_PROMPT,
+    prompt: str | None = None,
     temperature: float = DEFAULT_VLM_TEMPERATURE,
     max_tokens: int = DEFAULT_OCR_MAX_TOKENS,
 ) -> list[Path]:
@@ -131,7 +160,7 @@ def check_conversions(
         model: Vision model identifier.
         dpi: Render DPI.
         fmt: Image format.
-        prompt: OCR prompt sent with each page.
+        prompt: Optional OCR prompt override. Defaults to the markdown prompt file.
         temperature: Sampling temperature.
         max_tokens: Maximum output tokens per page.
 
@@ -225,7 +254,7 @@ def _ocr_page(
     *,
     model: str = DEFAULT_OCR_MODEL,
     fmt: str = DEFAULT_OCR_IMAGE_FORMAT,
-    prompt: str = OCR_PROMPT,
+    prompt: str | None = None,
     temperature: float = DEFAULT_VLM_TEMPERATURE,
     max_tokens: int = DEFAULT_OCR_MAX_TOKENS,
 ) -> str:
@@ -236,13 +265,14 @@ def _ocr_page(
         base64_image: Base64-encoded page image.
         model: Model identifier.
         fmt: Image format.
-        prompt: OCR instructions to send with the page image.
+        prompt: Optional OCR prompt override. Defaults to the markdown prompt file.
         temperature: Sampling temperature.
         max_tokens: Maximum output tokens per page.
 
     Returns:
         Markdown text extracted from the page image.
     """
+    resolved_prompt = _resolve_prompt(prompt)
     mime = "image/jpeg" if fmt == "jpeg" else "image/png"
     response = client.chat.completions.create(
         model=model,
@@ -250,7 +280,7 @@ def _ocr_page(
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": prompt},
+                    {"type": "text", "text": resolved_prompt},
                     {
                         "type": "image_url",
                         "image_url": {"url": f"data:{mime};base64,{base64_image}"},
@@ -273,7 +303,7 @@ def convert_file(
     model: str = DEFAULT_OCR_MODEL,
     dpi: int = DEFAULT_OCR_DPI,
     fmt: str = DEFAULT_OCR_IMAGE_FORMAT,
-    prompt: str = OCR_PROMPT,
+    prompt: str | None = None,
     temperature: float = DEFAULT_VLM_TEMPERATURE,
     max_tokens: int = DEFAULT_OCR_MAX_TOKENS,
     max_workers: int = DEFAULT_OCR_MAX_WORKERS,
@@ -289,7 +319,7 @@ def convert_file(
         model: Vision model identifier.
         dpi: Render DPI.
         fmt: Image format.
-        prompt: OCR instructions to send with each page.
+        prompt: Optional OCR prompt override. Defaults to the markdown prompt file.
         temperature: Sampling temperature.
         max_tokens: Maximum output tokens per page.
         max_workers: OCR worker thread count.
@@ -307,11 +337,12 @@ def convert_file(
 
     file_path = Path(file_path)
     output_name = out_name or file_path.stem
+    resolved_prompt = _resolve_prompt(prompt)
     settings_hash = hash_ocr_settings(
         model=model,
         dpi=dpi,
         fmt=fmt,
-        prompt=prompt,
+        prompt=resolved_prompt,
         temperature=temperature,
         max_tokens=max_tokens,
     )
@@ -332,7 +363,7 @@ def convert_file(
                     page_images[page_index],
                     model=model,
                     fmt=fmt,
-                    prompt=prompt,
+                    prompt=resolved_prompt,
                     temperature=temperature,
                     max_tokens=max_tokens,
                 )
@@ -395,7 +426,7 @@ def ocr_documents(
     model: str = DEFAULT_OCR_MODEL,
     dpi: int = DEFAULT_OCR_DPI,
     fmt: str = DEFAULT_OCR_IMAGE_FORMAT,
-    prompt: str = OCR_PROMPT,
+    prompt: str | None = None,
     temperature: float = DEFAULT_VLM_TEMPERATURE,
     max_tokens: int = DEFAULT_OCR_MAX_TOKENS,
     max_workers: int = DEFAULT_OCR_MAX_WORKERS,
@@ -410,7 +441,7 @@ def ocr_documents(
         model: Vision model identifier.
         dpi: Render DPI.
         fmt: Image format.
-        prompt: OCR instructions to send with each page.
+        prompt: Optional OCR prompt override. Defaults to the markdown prompt file.
         temperature: Sampling temperature.
         max_tokens: Maximum output tokens per page.
         max_workers: OCR worker thread count.
