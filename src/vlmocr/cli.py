@@ -168,7 +168,7 @@ def _render_menu(*, ansi_enabled: bool) -> str:
         "[3] Convert raw OCR JSON",
         "[4] Validate current structure",
         "[5] Show quickstart",
-        "[6] Show/edit OCR prompt",
+        "[6] Show/edit default OCR prompt",
         "[7] Quit",
         "",
         "tip: press Ctrl+C at any prompt to leave the launcher.",
@@ -212,6 +212,14 @@ def build_parser() -> argparse.ArgumentParser:
     ocr_parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
     ocr_parser.add_argument("--api-key", default=None)
     ocr_parser.add_argument("--model", default=ocr.DEFAULT_OCR_MODEL)
+    ocr_parser.add_argument(
+        "--prompt-template",
+        default=None,
+        help=(
+            "Prompt template name in the OCR prompts folder. "
+            "When omitted in an interactive terminal, the CLI asks which template to use."
+        ),
+    )
     ocr_parser.add_argument("--dpi", type=int, default=ocr.DEFAULT_OCR_DPI)
     ocr_parser.add_argument(
         "--format",
@@ -409,6 +417,10 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> N
             return
 
         if args.command == "ocr":
+            selected_template, prompt_text = _resolve_ocr_prompt_for_command(
+                args.prompt_template
+            )
+            print(f"Using OCR prompt template: {selected_template}")
             ocr.ocr_documents(
                 docs_dir=args.docs_dir,
                 out_dir=args.out_dir,
@@ -416,6 +428,7 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> N
                 model=args.model,
                 dpi=args.dpi,
                 fmt=args.format,
+                prompt=prompt_text,
                 max_workers=args.max_workers,
                 max_retries=args.max_retries,
             )
@@ -446,6 +459,149 @@ def _prompt_api_key(input_fn: InputFunc) -> str | None:
         default="",
     )
     return value or None
+
+
+def _stdin_is_interactive() -> bool:
+    stream = getattr(sys, "stdin", None)
+    return bool(stream and stream.isatty())
+
+
+def _create_prompt_template_interactive(
+    *,
+    input_fn: InputFunc,
+    output_fn: OutputFunc,
+) -> tuple[str, str] | None:
+    template_name = _prompt_text(
+        input_fn,
+        "Template name (leave blank to cancel)",
+        default="",
+    )
+    if not template_name:
+        output_fn("Template creation cancelled.")
+        return None
+
+    description = _prompt_text(
+        input_fn,
+        "Template description",
+        default="User-defined OCR prompt template.",
+    )
+
+    output_fn("Enter OCR prompt markdown one line at a time.")
+    output_fn("When finished, enter a single line containing END.")
+
+    template_lines: list[str] = []
+    while True:
+        line = input_fn("template> ")
+        if line.strip() == "END":
+            break
+        template_lines.append(line)
+
+    template_prompt = "\n".join(template_lines).strip()
+    if not template_prompt:
+        output_fn("Template creation cancelled because the template prompt was empty.")
+        return None
+
+    try:
+        created_template = ocr.create_ocr_prompt_template(
+            template_name=template_name,
+            description=description,
+            prompt=template_prompt,
+        )
+    except ValueError as exc:
+        if "already exists" not in str(exc):
+            output_fn(str(exc))
+            return None
+
+        output_fn(str(exc))
+        if not _prompt_bool(input_fn, "Overwrite existing template", default=False):
+            output_fn("Template creation cancelled.")
+            return None
+
+        created_template = ocr.create_ocr_prompt_template(
+            template_name=template_name,
+            description=description,
+            prompt=template_prompt,
+            overwrite=True,
+        )
+
+    output_fn(
+        f"Saved OCR prompt template '{created_template.name}' to {created_template.path}."
+    )
+    return created_template.name, ocr.read_ocr_prompt_template(created_template.name)
+
+
+def _select_ocr_prompt_template(
+    *,
+    input_fn: InputFunc,
+    output_fn: OutputFunc,
+    allow_create: bool,
+) -> tuple[str, str]:
+    while True:
+        templates = ocr.list_ocr_prompt_templates()
+        default_index = next(
+            (
+                index
+                for index, template in enumerate(templates, start=1)
+                if template.name == ocr.DEFAULT_OCR_PROMPT_TEMPLATE
+            ),
+            1,
+        )
+
+        output_fn("Available OCR prompt templates:")
+        for index, template in enumerate(templates, start=1):
+            default_suffix = " (default)" if index == default_index else ""
+            output_fn(
+                f"  [{index}] {template.name}{default_suffix} - {template.description}"
+            )
+
+        create_index = len(templates) + 1
+        if allow_create:
+            output_fn(f"  [{create_index}] Create new template")
+
+        selected = input_fn(f"Select OCR prompt template [{default_index}]: ").strip()
+
+        if not selected:
+            template = templates[default_index - 1]
+            return template.name, ocr.read_ocr_prompt_template(template.name)
+
+        if allow_create and selected == str(create_index):
+            created = _create_prompt_template_interactive(
+                input_fn=input_fn,
+                output_fn=output_fn,
+            )
+            if created is not None:
+                return created
+            continue
+
+        try:
+            selected_index = int(selected)
+        except ValueError:
+            output_fn("Please enter one of the listed option numbers.")
+            continue
+
+        if not 1 <= selected_index <= len(templates):
+            output_fn("Please enter one of the listed option numbers.")
+            continue
+
+        template = templates[selected_index - 1]
+        return template.name, ocr.read_ocr_prompt_template(template.name)
+
+
+def _resolve_ocr_prompt_for_command(prompt_template: str | None) -> tuple[str, str]:
+    if prompt_template:
+        normalized_template = ocr.normalize_prompt_template_name(prompt_template)
+        return normalized_template, ocr.read_ocr_prompt_template(normalized_template)
+
+    if _stdin_is_interactive():
+        print("Select an OCR prompt template before OCR starts.")
+        return _select_ocr_prompt_template(
+            input_fn=input,
+            output_fn=print,
+            allow_create=True,
+        )
+
+    default_template = ocr.DEFAULT_OCR_PROMPT_TEMPLATE
+    return default_template, ocr.read_ocr_prompt_template(default_template)
 
 
 def _run_interactive_ocr(
@@ -488,12 +644,24 @@ def _run_interactive_ocr(
         )
 
     try:
+        selected_template, prompt_text = _select_ocr_prompt_template(
+            input_fn=input_fn,
+            output_fn=output_fn,
+            allow_create=True,
+        )
+        output_fn(f"Using OCR prompt template: {selected_template}")
+    except ValueError as exc:
+        output_fn(str(exc))
+        return
+
+    try:
         to_convert = ocr.check_conversions(
             docs_dir=docs_dir,
             out_dir=out_dir,
             model=model,
             dpi=dpi,
             fmt=fmt,
+            prompt=prompt_text,
         )
         if not to_convert:
             output_fn("No files need conversion.")
@@ -522,6 +690,7 @@ def _run_interactive_ocr(
             model=model,
             dpi=dpi,
             fmt=fmt,
+            prompt=prompt_text,
             max_workers=max_workers,
             max_retries=max_retries,
         )
@@ -548,9 +717,9 @@ def _show_or_edit_ocr_prompt(
         return
 
     output_fn(f"OCR prompt file: {prompt_path}")
-    output_fn("----- begin ocr_prompt.md -----")
+    output_fn(f"----- begin {prompt_path.name} -----")
     output_fn(prompt_text)
-    output_fn("----- end ocr_prompt.md -----")
+    output_fn(f"----- end {prompt_path.name} -----")
 
     if not _prompt_bool(input_fn, "Edit OCR prompt now", default=False):
         return

@@ -1,3 +1,7 @@
+---
+description: General-purpose OCR for mixed-layout documents, with figure and footnote tags.
+---
+
 This image is one page of a document. Extract the content of the page verbatim and convert it to Markdown.
 Convert tables into standard Markdown table syntax. For complex layouts you may use HTML syntax if necessary.
 Convert section headings to Markdown headers, preserving hierarchy (e.g., #, ##, ###).

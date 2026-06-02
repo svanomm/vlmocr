@@ -6,7 +6,9 @@ import base64
 import hashlib
 import json
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 
 import dotenv
@@ -32,12 +34,171 @@ DEFAULT_OCR_MAX_TOKENS = int(os.environ.get("VLMOCR_MAX_TOKENS", "4096"))
 DEFAULT_OCR_MAX_WORKERS = int(os.environ.get("VLMOCR_MAX_WORKERS", "4"))
 DEFAULT_OCR_MAX_RETRIES = int(os.environ.get("VLMOCR_MAX_RETRIES", "3"))
 
-OCR_PROMPT_PATH = Path(__file__).with_name("ocr_prompt.md")
+DEFAULT_OCR_PROMPT_TEMPLATE = "default"
+PROMPT_TEMPLATE_EXTENSION = ".md"
+OCR_PROMPTS_DIR = Path(__file__).with_name("prompts")
+OCR_PROMPT_PATH = OCR_PROMPTS_DIR / f"{DEFAULT_OCR_PROMPT_TEMPLATE}{PROMPT_TEMPLATE_EXTENSION}"
+
+_PROMPT_TEMPLATE_NAME_PATTERN = re.compile(r"[^a-z0-9]+")
+
+
+@dataclass(frozen=True)
+class OCRPromptTemplate:
+    """Metadata describing a stored OCR prompt template."""
+
+    name: str
+    path: Path
+    description: str
 
 
 def get_ocr_prompt_path() -> Path:
     """Return the canonical markdown file path for OCR prompt instructions."""
     return OCR_PROMPT_PATH
+
+
+def get_ocr_prompts_dir() -> Path:
+    """Return the canonical directory containing OCR prompt templates."""
+    return OCR_PROMPTS_DIR
+
+
+def normalize_prompt_template_name(name: str) -> str:
+    """Normalize a user-provided template name into a safe slug."""
+    normalized = _PROMPT_TEMPLATE_NAME_PATTERN.sub("-", name.strip().lower()).strip("-")
+    if not normalized:
+        raise ValueError("Template name must include letters or numbers.")
+    return normalized
+
+
+def get_ocr_prompt_template_path(
+    template_name: str,
+    *,
+    prompts_dir: Path | None = None,
+) -> Path:
+    """Return the markdown path for a named OCR prompt template."""
+    normalized_name = normalize_prompt_template_name(template_name)
+    base_dir = prompts_dir or OCR_PROMPTS_DIR
+    return base_dir / f"{normalized_name}{PROMPT_TEMPLATE_EXTENSION}"
+
+
+def _parse_front_matter(markdown: str) -> tuple[dict[str, str], str]:
+    lines = markdown.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {}, markdown
+
+    end_index = None
+    for idx, line in enumerate(lines[1:], start=1):
+        if line.strip() == "---":
+            end_index = idx
+            break
+
+    if end_index is None:
+        return {}, markdown
+
+    metadata: dict[str, str] = {}
+    for line in lines[1:end_index]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        key, separator, value = stripped.partition(":")
+        if not separator:
+            continue
+        metadata[key.strip().lower()] = value.strip().strip('"').strip("'")
+
+    body = "\n".join(lines[end_index + 1 :])
+    return metadata, body
+
+
+def _extract_template_description(markdown: str) -> str:
+    metadata, _ = _parse_front_matter(markdown)
+    description = metadata.get("description", "").strip()
+    return description or "No description provided."
+
+
+def _render_template_markdown(*, description: str, prompt: str) -> str:
+    normalized_description = description.strip() or "User-defined OCR prompt template."
+    normalized_prompt = prompt.strip()
+    if not normalized_prompt:
+        raise ValueError("OCR prompt cannot be empty.")
+
+    return "\n".join(
+        [
+            "---",
+            f"description: {normalized_description}",
+            "---",
+            "",
+            normalized_prompt,
+            "",
+        ]
+    )
+
+
+def list_ocr_prompt_templates(prompts_dir: Path | None = None) -> list[OCRPromptTemplate]:
+    """List available OCR prompt templates and their descriptions."""
+    base_dir = prompts_dir or OCR_PROMPTS_DIR
+    if not base_dir.exists():
+        raise ValueError(f"OCR prompt templates directory not found: {base_dir}")
+
+    templates: list[OCRPromptTemplate] = []
+    for path in sorted(base_dir.glob(f"*{PROMPT_TEMPLATE_EXTENSION}")):
+        try:
+            markdown = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+
+        templates.append(
+            OCRPromptTemplate(
+                name=path.stem,
+                path=path,
+                description=_extract_template_description(markdown),
+            )
+        )
+
+    if not templates:
+        raise ValueError(f"No OCR prompt templates found in {base_dir}")
+    return templates
+
+
+def read_ocr_prompt_template(
+    template_name: str = DEFAULT_OCR_PROMPT_TEMPLATE,
+    *,
+    prompts_dir: Path | None = None,
+) -> str:
+    """Read OCR prompt instructions from a named template."""
+    return read_ocr_prompt(
+        get_ocr_prompt_template_path(template_name, prompts_dir=prompts_dir)
+    )
+
+
+def create_ocr_prompt_template(
+    *,
+    template_name: str,
+    description: str,
+    prompt: str,
+    prompts_dir: Path | None = None,
+    overwrite: bool = False,
+) -> OCRPromptTemplate:
+    """Create or update an OCR prompt template markdown file."""
+    base_dir = prompts_dir or OCR_PROMPTS_DIR
+    base_dir.mkdir(parents=True, exist_ok=True)
+
+    normalized_name = normalize_prompt_template_name(template_name)
+    template_path = base_dir / f"{normalized_name}{PROMPT_TEMPLATE_EXTENSION}"
+    if template_path.exists() and not overwrite:
+        raise ValueError(
+            f"OCR prompt template already exists: {template_path}. Choose another name or overwrite it."
+        )
+
+    template_markdown = _render_template_markdown(
+        description=description,
+        prompt=prompt,
+    )
+    template_path.write_text(template_markdown, encoding="utf-8")
+
+    return OCRPromptTemplate(
+        name=normalized_name,
+        path=template_path,
+        description=description.strip() or "User-defined OCR prompt template.",
+    )
 
 
 def read_ocr_prompt(prompt_path: Path | None = None) -> str:
@@ -49,7 +210,8 @@ def read_ocr_prompt(prompt_path: Path | None = None) -> str:
     except OSError as exc:
         raise ValueError(f"OCR prompt file not found: {target_path}") from exc
 
-    normalized_prompt = prompt_text.strip()
+    _, prompt_body = _parse_front_matter(prompt_text)
+    normalized_prompt = prompt_body.strip()
     if not normalized_prompt:
         raise ValueError(f"OCR prompt file is empty: {target_path}")
 
@@ -63,6 +225,26 @@ def write_ocr_prompt(prompt: str, prompt_path: Path | None = None) -> None:
         raise ValueError("OCR prompt cannot be empty.")
 
     target_path = prompt_path or OCR_PROMPT_PATH
+
+    # Preserve template metadata when editing files in the managed templates folder.
+    if target_path.parent == OCR_PROMPTS_DIR:
+        description = ""
+        if target_path.exists():
+            try:
+                existing_text = target_path.read_text(encoding="utf-8")
+            except OSError:
+                existing_text = ""
+
+            parsed_description = _extract_template_description(existing_text)
+            if parsed_description != "No description provided.":
+                description = parsed_description
+
+        target_path.write_text(
+            _render_template_markdown(description=description, prompt=normalized_prompt),
+            encoding="utf-8",
+        )
+        return
+
     target_path.write_text(f"{normalized_prompt}\n", encoding="utf-8")
 
 

@@ -31,7 +31,7 @@ VLMs are better for this kind of document OCR because they do not only identify 
 - describing non-text visuals such as figures and charts
 - keeping footnotes connected to the places where they are referenced
 
-An additional benefit of using a general-purpose multimodal VLM is that you can prompt it with custom instructions: write text descriptions of charts, convert math to LaTeX, and much more. You can easily change the prompt underlying `vlmocr` to suit your preferences, and can also experiment with model parameters such as temperature (which defaults to 0.0).
+An additional benefit of using a general-purpose multimodal VLM is that you can prompt it with custom instructions: write text descriptions of charts, convert math to LaTeX, and much more. `vlmocr` now ships with multiple OCR prompt templates and lets you create your own from the CLI.
 
 ## Markdown conventions used by this repo
 
@@ -118,6 +118,16 @@ uv run vlmocr
 
 This opens a terminal interface that lets you initialize the workspace, inspect the expected directory layout, and run the available commands with prompts.
 It also explains where to create an OpenRouter API key and how to store it before you run OCR.
+
+When you run OCR from the launcher (or from `vlmocr ocr` in an interactive terminal), you will be asked which OCR prompt template to use.
+The prompt list shows each template name with a short description, includes a default option, and also includes an in-CLI flow to create a new template.
+
+Built-in templates are stored as Markdown files in `src/vlmocr/prompts/`.
+You can pass a template directly in command mode with:
+
+```bash
+uv run vlmocr ocr --prompt-template default
+```
 
 ## Defaults and options
 

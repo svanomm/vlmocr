@@ -34,6 +34,34 @@ def test_main_dispatches_ocr_command(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert captured["docs_dir"] == Path("docs")
     assert captured["out_dir"] == Path("out")
+    assert captured["prompt"] == cli.ocr.read_ocr_prompt_template(
+        cli.ocr.DEFAULT_OCR_PROMPT_TEMPLATE
+    )
+
+
+def test_main_dispatches_ocr_command_with_named_prompt_template(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The CLI should honor --prompt-template for OCR command dispatch."""
+    captured: dict[str, object] = {}
+
+    def fake_ocr_documents(**kwargs: object) -> list[Path]:
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(cli.ocr, "ocr_documents", fake_ocr_documents)
+
+    cli.main([
+        "ocr",
+        "--docs-dir",
+        "docs",
+        "--out-dir",
+        "out",
+        "--prompt-template",
+        "literal",
+    ])
+
+    assert captured["prompt"] == cli.ocr.read_ocr_prompt_template("literal")
 
 
 def test_main_dispatches_convert_command(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -250,7 +278,7 @@ def test_launch_tui_ocr_default_options_skip_extra_questions(
     docs_dir.mkdir()
     prompts: list[str] = []
     output_lines: list[str] = []
-    responses = iter(["2", "y", "y", "", "7"])
+    responses = iter(["2", "y", "", "y", "", "7"])
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(cli, "DEFAULT_DOCS_DIR", docs_dir)
@@ -288,6 +316,7 @@ def test_launch_tui_ocr_default_options_skip_extra_questions(
     assert prompts == [
         "Select an option [1-7]: ",
         "Use default OCR options? [Y/n]: ",
+        "Select OCR prompt template [1]: ",
         "Proceed with OCR using the estimated cost above? [y/N]: ",
         "Press Enter to return to the menu...",
         "Select an option [1-7]: ",
@@ -311,7 +340,7 @@ def test_launch_tui_ocr_requires_final_confirmation(
     out_dir = tmp_path / "converted"
     docs_dir.mkdir()
     output_lines: list[str] = []
-    responses = iter(["2", "y", "n", "", "7"])
+    responses = iter(["2", "y", "", "n", "", "7"])
     ocr_called = {"value": False}
 
     monkeypatch.setattr(cli, "DEFAULT_DOCS_DIR", docs_dir)
@@ -357,7 +386,7 @@ def test_launch_tui_ocr_custom_options_still_use_default_directories(
     out_dir = tmp_path / "converted"
     docs_dir.mkdir()
     prompts: list[str] = []
-    responses = iter(["2", "n", "test-key", "openai/gpt-4.1-mini", "200", "jpeg", "4", "2", "y", "", "7"])
+    responses = iter(["2", "n", "test-key", "openai/gpt-4.1-mini", "200", "jpeg", "4", "2", "", "y", "", "7"])
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(cli, "DEFAULT_DOCS_DIR", docs_dir)
@@ -401,6 +430,7 @@ def test_launch_tui_ocr_custom_options_still_use_default_directories(
         f"Image format [{cli.ocr.DEFAULT_OCR_IMAGE_FORMAT}]: ",
         f"Max workers [{cli.ocr.DEFAULT_OCR_MAX_WORKERS}]: ",
         f"Max retries [{cli.ocr.DEFAULT_OCR_MAX_RETRIES}]: ",
+        "Select OCR prompt template [1]: ",
         "Proceed with OCR using the estimated cost above? [y/N]: ",
         "Press Enter to return to the menu...",
         "Select an option [1-7]: ",
@@ -426,7 +456,7 @@ def test_launch_tui_ocr_skips_cost_estimate_when_no_files_need_conversion(
     output_lines: list[str] = []
     estimate_called = {"value": False}
     ocr_called = {"value": False}
-    responses = iter(["2", "y", "", "7"])
+    responses = iter(["2", "y", "", "", "7"])
 
     monkeypatch.setattr(cli, "DEFAULT_DOCS_DIR", docs_dir)
     monkeypatch.setattr(cli, "DEFAULT_OUT_DIR", out_dir)
@@ -457,6 +487,7 @@ def test_launch_tui_ocr_skips_cost_estimate_when_no_files_need_conversion(
     assert prompts == [
         "Select an option [1-7]: ",
         "Use default OCR options? [Y/n]: ",
+        "Select OCR prompt template [1]: ",
         "Press Enter to return to the menu...",
         "Select an option [1-7]: ",
     ]
@@ -591,6 +622,72 @@ def test_launch_tui_show_ocr_prompt_can_edit_file(
         "Select an option [1-7]: ",
     ]
     assert any("Saved OCR prompt to" in line for line in output_lines)
+
+
+def test_launch_tui_ocr_can_create_new_prompt_template(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """OCR flow should allow creating a new prompt template and using it immediately."""
+    docs_dir = tmp_path / "docs"
+    out_dir = tmp_path / "converted"
+    prompts_dir = tmp_path / "prompts"
+    docs_dir.mkdir()
+    prompts_dir.mkdir(parents=True)
+
+    (prompts_dir / "default.md").write_text(
+        "---\ndescription: Default template.\n---\n\nDefault body.\n",
+        encoding="utf-8",
+    )
+    (prompts_dir / "literal.md").write_text(
+        "---\ndescription: Literal template.\n---\n\nLiteral body.\n",
+        encoding="utf-8",
+    )
+
+    responses = iter(
+        [
+            "2",
+            "y",
+            "3",
+            "Economic Tables",
+            "Focus on table reconstruction.",
+            "Extract every table exactly.",
+            "END",
+            "y",
+            "",
+            "7",
+        ]
+    )
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(cli, "DEFAULT_DOCS_DIR", docs_dir)
+    monkeypatch.setattr(cli, "DEFAULT_OUT_DIR", out_dir)
+    monkeypatch.setattr(cli.ocr, "OCR_PROMPTS_DIR", prompts_dir)
+    monkeypatch.setattr(cli.ocr, "OCR_PROMPT_PATH", prompts_dir / "default.md")
+    monkeypatch.setattr(cli.ocr, "check_conversions", lambda **kwargs: [docs_dir / "sample.pdf"])
+
+    monkeypatch.setattr(
+        cli.estimate_cost,
+        "count_pages_for_files",
+        lambda pdf_files, *, output_fn=print, source_label: 0.5,
+    )
+
+    def fake_ocr_documents(**kwargs: object) -> list[Path]:
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(cli.ocr, "ocr_documents", fake_ocr_documents)
+
+    cli.launch_tui(
+        input_fn=lambda prompt: next(responses),
+        output_fn=lambda message: None,
+    )
+
+    created_template_path = prompts_dir / "economic-tables.md"
+    assert created_template_path.exists()
+    assert "description: Focus on table reconstruction." in created_template_path.read_text(
+        encoding="utf-8"
+    )
+    assert captured["prompt"] == "Extract every table exactly."
 
 
 def test_main_ocr_missing_api_key_shows_setup_instructions(

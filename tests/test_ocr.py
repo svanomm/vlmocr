@@ -243,3 +243,49 @@ def test_hash_ocr_settings_changes_when_prompt_file_changes(
     second_hash = ocr_module.hash_ocr_settings(model="test-model", dpi=300, fmt="jpeg")
 
     assert first_hash != second_hash
+
+
+def test_list_ocr_prompt_templates_reads_front_matter_descriptions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Template listing should include filename stems and parsed descriptions."""
+    prompts_dir = tmp_path / "prompts"
+    prompts_dir.mkdir()
+    (prompts_dir / "default.md").write_text(
+        "---\ndescription: Default profile.\n---\n\nDefault prompt body.\n",
+        encoding="utf-8",
+    )
+    (prompts_dir / "literal.md").write_text(
+        "---\ndescription: Literal profile.\n---\n\nLiteral prompt body.\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ocr_module, "OCR_PROMPTS_DIR", prompts_dir)
+
+    templates = ocr_module.list_ocr_prompt_templates()
+
+    assert [(template.name, template.description) for template in templates] == [
+        ("default", "Default profile."),
+        ("literal", "Literal profile."),
+    ]
+
+
+def test_create_ocr_prompt_template_normalizes_name_and_writes_front_matter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Template creation should slugify names and store description metadata."""
+    prompts_dir = tmp_path / "prompts"
+    monkeypatch.setattr(ocr_module, "OCR_PROMPTS_DIR", prompts_dir)
+
+    created = ocr_module.create_ocr_prompt_template(
+        template_name="Econometrics Tables!",
+        description="Extract tables with high fidelity.",
+        prompt="Use markdown tables for every table.",
+    )
+
+    assert created.name == "econometrics-tables"
+    assert created.path == prompts_dir / "econometrics-tables.md"
+    assert created.path.exists()
+    assert (
+        ocr_module.read_ocr_prompt_template("econometrics-tables")
+        == "Use markdown tables for every table."
+    )
