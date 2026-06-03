@@ -20,6 +20,27 @@ def _create_test_pdf(path: Path, *, text: str = "Page 1") -> None:
     doc.close()
 
 
+def _pending_document(path: Path) -> cli.ocr.OCRInputDocument:
+    return cli.ocr.OCRInputDocument(
+        path=path,
+        output_name=path.stem,
+        source_type="pdf",
+    )
+
+
+def _template_selection_prompt() -> str:
+    templates = cli.ocr.list_ocr_prompt_templates()
+    default_index = next(
+        (
+            index
+            for index, template in enumerate(templates, start=1)
+            if template.name == cli.ocr.DEFAULT_OCR_PROMPT_TEMPLATE
+        ),
+        1,
+    )
+    return f"Select OCR prompt template [{default_index}]: "
+
+
 def test_main_dispatches_ocr_command(monkeypatch: pytest.MonkeyPatch) -> None:
     """The CLI should dispatch the OCR command to the OCR module."""
     captured: dict[str, object] = {}
@@ -34,6 +55,7 @@ def test_main_dispatches_ocr_command(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert captured["docs_dir"] == Path("docs")
     assert captured["out_dir"] == Path("out")
+    assert captured["recursive"] is True
     assert captured["prompt"] == cli.ocr.read_ocr_prompt_template(
         cli.ocr.DEFAULT_OCR_PROMPT_TEMPLATE
     )
@@ -50,6 +72,11 @@ def test_main_dispatches_ocr_command_with_named_prompt_template(
         return []
 
     monkeypatch.setattr(cli.ocr, "ocr_documents", fake_ocr_documents)
+    monkeypatch.setattr(
+        cli.ocr,
+        "read_ocr_prompt_template",
+        lambda template_name=cli.ocr.DEFAULT_OCR_PROMPT_TEMPLATE: f"prompt:{template_name}",
+    )
 
     cli.main([
         "ocr",
@@ -61,7 +88,25 @@ def test_main_dispatches_ocr_command_with_named_prompt_template(
         "literal",
     ])
 
-    assert captured["prompt"] == cli.ocr.read_ocr_prompt_template("literal")
+    assert captured["prompt"] == "prompt:literal"
+    assert captured["recursive"] is True
+
+
+def test_main_dispatches_ocr_command_with_no_recursive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The CLI should pass recursive=False when --no-recursive is selected."""
+    captured: dict[str, object] = {}
+
+    def fake_ocr_documents(**kwargs: object) -> list[Path]:
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(cli.ocr, "ocr_documents", fake_ocr_documents)
+
+    cli.main(["ocr", "--docs-dir", "docs", "--out-dir", "out", "--no-recursive"])
+
+    assert captured["recursive"] is False
 
 
 def test_main_dispatches_convert_command(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -88,14 +133,34 @@ def test_main_dispatches_estimate_cost_command(monkeypatch: pytest.MonkeyPatch) 
     """The CLI should dispatch estimate-cost to the estimator module."""
     captured: dict[str, object] = {}
 
-    def fake_count_pages(folder: Path) -> None:
+    def fake_count_pages(folder: Path, *, recursive: bool = True) -> None:
         captured["folder"] = folder
+        captured["recursive"] = recursive
 
     monkeypatch.setattr(cli.estimate_cost, "count_pages", fake_count_pages)
 
     cli.main(["estimate-cost", "--docs-dir", "docs"])
 
     assert captured["folder"] == Path("docs")
+    assert captured["recursive"] is True
+
+
+def test_main_dispatches_estimate_cost_command_with_no_recursive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The CLI should pass recursive=False to estimate-cost with --no-recursive."""
+    captured: dict[str, object] = {}
+
+    def fake_count_pages(folder: Path, *, recursive: bool = True) -> None:
+        captured["folder"] = folder
+        captured["recursive"] = recursive
+
+    monkeypatch.setattr(cli.estimate_cost, "count_pages", fake_count_pages)
+
+    cli.main(["estimate-cost", "--docs-dir", "docs", "--no-recursive"])
+
+    assert captured["folder"] == Path("docs")
+    assert captured["recursive"] is False
 
 
 def test_main_ocr_writes_raw_json_to_selected_out_dir(
@@ -286,7 +351,7 @@ def test_launch_tui_ocr_default_options_skip_extra_questions(
     monkeypatch.setattr(
         cli.ocr,
         "check_conversions",
-        lambda **kwargs: [docs_dir / "sample.pdf"],
+        lambda **kwargs: [_pending_document(docs_dir / "sample.pdf")],
     )
 
     def fake_count_pages_for_files(
@@ -316,7 +381,7 @@ def test_launch_tui_ocr_default_options_skip_extra_questions(
     assert prompts == [
         "Select an option [1-7]: ",
         "Use default OCR options? [Y/n]: ",
-        "Select OCR prompt template [1]: ",
+        _template_selection_prompt(),
         "Proceed with OCR using the estimated cost above? [y/N]: ",
         "Press Enter to return to the menu...",
         "Select an option [1-7]: ",
@@ -348,7 +413,7 @@ def test_launch_tui_ocr_requires_final_confirmation(
     monkeypatch.setattr(
         cli.ocr,
         "check_conversions",
-        lambda **kwargs: [docs_dir / "sample.pdf"],
+        lambda **kwargs: [_pending_document(docs_dir / "sample.pdf")],
     )
 
     def fake_count_pages_for_files(
@@ -394,7 +459,7 @@ def test_launch_tui_ocr_custom_options_still_use_default_directories(
     monkeypatch.setattr(
         cli.ocr,
         "check_conversions",
-        lambda **kwargs: [docs_dir / "sample.pdf"],
+        lambda **kwargs: [_pending_document(docs_dir / "sample.pdf")],
     )
 
     def fake_count_pages_for_files(
@@ -430,7 +495,7 @@ def test_launch_tui_ocr_custom_options_still_use_default_directories(
         f"Image format [{cli.ocr.DEFAULT_OCR_IMAGE_FORMAT}]: ",
         f"Max workers [{cli.ocr.DEFAULT_OCR_MAX_WORKERS}]: ",
         f"Max retries [{cli.ocr.DEFAULT_OCR_MAX_RETRIES}]: ",
-        "Select OCR prompt template [1]: ",
+        _template_selection_prompt(),
         "Proceed with OCR using the estimated cost above? [y/N]: ",
         "Press Enter to return to the menu...",
         "Select an option [1-7]: ",
@@ -487,7 +552,7 @@ def test_launch_tui_ocr_skips_cost_estimate_when_no_files_need_conversion(
     assert prompts == [
         "Select an option [1-7]: ",
         "Use default OCR options? [Y/n]: ",
-        "Select OCR prompt template [1]: ",
+        _template_selection_prompt(),
         "Press Enter to return to the menu...",
         "Select an option [1-7]: ",
     ]
@@ -663,7 +728,11 @@ def test_launch_tui_ocr_can_create_new_prompt_template(
     monkeypatch.setattr(cli, "DEFAULT_OUT_DIR", out_dir)
     monkeypatch.setattr(cli.ocr, "OCR_PROMPTS_DIR", prompts_dir)
     monkeypatch.setattr(cli.ocr, "OCR_PROMPT_PATH", prompts_dir / "default.md")
-    monkeypatch.setattr(cli.ocr, "check_conversions", lambda **kwargs: [docs_dir / "sample.pdf"])
+    monkeypatch.setattr(
+        cli.ocr,
+        "check_conversions",
+        lambda **kwargs: [_pending_document(docs_dir / "sample.pdf")],
+    )
 
     monkeypatch.setattr(
         cli.estimate_cost,

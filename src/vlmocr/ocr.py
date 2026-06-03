@@ -1,18 +1,22 @@
-"""PDF rendering and OpenRouter-based page OCR."""
+"""Document rendering and OpenRouter-based page OCR."""
 
 from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
 import os
 import re
+from collections import defaultdict
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
 import dotenv
 import fitz
+from PIL import Image, ImageOps
 from openai import OpenAI
 from tqdm import tqdm
 
@@ -34,6 +38,14 @@ DEFAULT_OCR_MAX_TOKENS = int(os.environ.get("VLMOCR_MAX_TOKENS", "4096"))
 DEFAULT_OCR_MAX_WORKERS = int(os.environ.get("VLMOCR_MAX_WORKERS", "4"))
 DEFAULT_OCR_MAX_RETRIES = int(os.environ.get("VLMOCR_MAX_RETRIES", "3"))
 
+SUPPORTED_OCR_INPUT_EXTENSIONS = frozenset(
+    {".pdf", ".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+)
+SUPPORTED_OCR_IMAGE_EXTENSIONS = frozenset(
+    SUPPORTED_OCR_INPUT_EXTENSIONS - {".pdf"}
+)
+UNSUPPORTED_OCR_INPUT_EXTENSIONS = frozenset({".tif", ".tiff", ".gif"})
+
 DEFAULT_OCR_PROMPT_TEMPLATE = "default"
 PROMPT_TEMPLATE_EXTENSION = ".md"
 OCR_PROMPTS_DIR = Path(__file__).with_name("prompts")
@@ -49,6 +61,26 @@ class OCRPromptTemplate:
     name: str
     path: Path
     description: str
+
+
+@dataclass(frozen=True)
+class OCRInputDocument:
+    """One supported OCR input and its deterministic output stem."""
+
+    path: Path
+    output_name: str
+    source_type: str
+
+
+@dataclass(frozen=True)
+class SkippedOCRInput:
+    """One discovered input file skipped by OCR discovery."""
+
+    path: Path
+    reason: str
+
+
+OutputFunc = Callable[[str], None]
 
 
 def get_ocr_prompt_path() -> Path:
@@ -323,6 +355,95 @@ def _raw_ocr_matches_settings(raw_json_path: Path, *, settings_hash: str) -> boo
     return payload["settings_hash"] == settings_hash
 
 
+def _path_sort_key(path: Path, *, docs_dir: Path) -> str:
+    """Return a deterministic lowercase relative path sort key."""
+    return path.relative_to(docs_dir).as_posix().lower()
+
+
+def _resolve_output_names(paths: list[Path], *, docs_dir: Path) -> dict[Path, str]:
+    """Resolve deterministic output names with extension suffixes for collisions."""
+    by_stem: dict[str, list[Path]] = defaultdict(list)
+    for path in paths:
+        by_stem[path.stem].append(path)
+
+    resolved: dict[Path, str] = {}
+    for stem, grouped_paths in by_stem.items():
+        if len(grouped_paths) == 1:
+            resolved[grouped_paths[0]] = stem
+            continue
+
+        for path in grouped_paths:
+            extension_suffix = path.suffix.lower().lstrip(".") or "file"
+            resolved[path] = f"{stem}__{extension_suffix}"
+
+    by_output_name: dict[str, list[Path]] = defaultdict(list)
+    for path, output_name in resolved.items():
+        by_output_name[output_name].append(path)
+
+    for output_name, grouped_paths in by_output_name.items():
+        if len(grouped_paths) == 1:
+            continue
+
+        for index, path in enumerate(
+            sorted(grouped_paths, key=lambda item: _path_sort_key(item, docs_dir=docs_dir)),
+            start=1,
+        ):
+            resolved[path] = f"{output_name}__{index}"
+
+    return resolved
+
+
+def discover_ocr_documents(
+    docs_dir: Path = DEFAULT_DOCS_DIR,
+    *,
+    recursive: bool = True,
+) -> tuple[list[OCRInputDocument], list[SkippedOCRInput]]:
+    """Discover supported OCR inputs and explicitly skipped unsupported files."""
+    if not docs_dir.exists():
+        raise FileNotFoundError(f"Docs directory not found: {docs_dir}")
+
+    scan_iter = docs_dir.rglob("*") if recursive else docs_dir.glob("*")
+    file_paths = sorted(
+        (path for path in scan_iter if path.is_file()),
+        key=lambda item: _path_sort_key(item, docs_dir=docs_dir),
+    )
+
+    supported_paths: list[Path] = []
+    skipped_inputs: list[SkippedOCRInput] = []
+    for path in file_paths:
+        extension = path.suffix.lower()
+        if extension in SUPPORTED_OCR_INPUT_EXTENSIONS:
+            supported_paths.append(path)
+            continue
+        if extension in UNSUPPORTED_OCR_INPUT_EXTENSIONS:
+            skipped_inputs.append(
+                SkippedOCRInput(
+                    path=path,
+                    reason="format not supported yet",
+                )
+            )
+
+    output_names = _resolve_output_names(supported_paths, docs_dir=docs_dir)
+    discovered_documents = [
+        OCRInputDocument(
+            path=path,
+            output_name=output_names[path],
+            source_type="pdf" if path.suffix.lower() == ".pdf" else "image",
+        )
+        for path in supported_paths
+    ]
+    return discovered_documents, skipped_inputs
+
+
+def _emit_skipped_input_warnings(
+    skipped_inputs: list[SkippedOCRInput], *, output_fn: OutputFunc
+) -> None:
+    for skipped in skipped_inputs:
+        output_fn(
+            f"Skipping unsupported document format: {skipped.path} ({skipped.reason})."
+        )
+
+
 def check_conversions(
     docs_dir: Path = DEFAULT_DOCS_DIR,
     out_dir: Path = DEFAULT_OUT_DIR,
@@ -333,11 +454,13 @@ def check_conversions(
     prompt: str | None = None,
     temperature: float = DEFAULT_VLM_TEMPERATURE,
     max_tokens: int = DEFAULT_OCR_MAX_TOKENS,
-) -> list[Path]:
-    """Check which PDF files still need OCR conversion.
+    recursive: bool = True,
+    output_fn: OutputFunc = print,
+) -> list[OCRInputDocument]:
+    """Check which discovered documents still need OCR conversion.
 
     Args:
-        docs_dir: Directory containing input PDF files.
+        docs_dir: Directory containing OCR input files.
         out_dir: Base output directory for OCR artifacts.
         model: Vision model identifier.
         dpi: Render DPI.
@@ -345,17 +468,21 @@ def check_conversions(
         prompt: Optional OCR prompt override. Defaults to the markdown prompt file.
         temperature: Sampling temperature.
         max_tokens: Maximum output tokens per page.
+        recursive: Whether to scan docs_dir recursively.
+        output_fn: Function used for skip warnings.
 
     Returns:
-        PDF paths that do not yet have raw OCR JSON output for the current settings.
+        Input documents that do not yet have raw OCR JSON output for the current settings.
     """
     raw_json_dir = get_raw_ocr_dir(out_dir)
-    if not docs_dir.exists():
-        raise FileNotFoundError(f"Docs directory not found: {docs_dir}")
-
     raw_json_dir.mkdir(parents=True, exist_ok=True)
-    pdf_files = sorted(docs_dir.glob("*.pdf"))
-    needs_conversion: list[Path] = []
+    discovered_documents, skipped_inputs = discover_ocr_documents(
+        docs_dir=docs_dir,
+        recursive=recursive,
+    )
+    _emit_skipped_input_warnings(skipped_inputs, output_fn=output_fn)
+
+    needs_conversion: list[OCRInputDocument] = []
     current_settings_hash = hash_ocr_settings(
         model=model,
         dpi=dpi,
@@ -365,12 +492,12 @@ def check_conversions(
         max_tokens=max_tokens,
     )
 
-    for pdf_path in pdf_files:
-        json_file = raw_json_dir / f"{pdf_path.stem}.json"
+    for document in discovered_documents:
+        json_file = raw_json_dir / f"{document.output_name}.json"
         if not _raw_ocr_matches_settings(
             json_file, settings_hash=current_settings_hash
         ):
-            needs_conversion.append(pdf_path)
+            needs_conversion.append(document)
 
     return needs_conversion
 
@@ -400,6 +527,13 @@ def create_client(api_key: str | None = None) -> OpenAI:
     )
 
 
+def _validate_request_image_format(fmt: str) -> str:
+    normalized_format = fmt.lower()
+    if normalized_format not in {"png", "jpeg"}:
+        raise ValueError(f"Unsupported image format: {fmt}")
+    return normalized_format
+
+
 def render_page_to_image(
     doc: fitz.Document,
     page_index: int,
@@ -420,14 +554,59 @@ def render_page_to_image(
     Raises:
         ValueError: If the image format is unsupported.
     """
-    if fmt not in {"png", "jpeg"}:
-        raise ValueError(f"Unsupported image format: {fmt}")
+    normalized_format = _validate_request_image_format(fmt)
 
     page = doc[page_index]
     scale = dpi / 72.0
     pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale))
-    image_bytes = pix.tobytes(output="jpeg" if fmt == "jpeg" else "png")
+    image_bytes = pix.tobytes(output="jpeg" if normalized_format == "jpeg" else "png")
     return base64.b64encode(image_bytes).decode("utf-8")
+
+
+def render_image_to_image(
+    file_path: str | Path,
+    *,
+    fmt: str = DEFAULT_OCR_IMAGE_FORMAT,
+) -> str:
+    """Render an image file to normalized base64-encoded PNG or JPEG."""
+    normalized_format = _validate_request_image_format(fmt)
+    file_path = Path(file_path)
+
+    with Image.open(file_path) as image:
+        oriented = ImageOps.exif_transpose(image)
+        rgb_image = oriented.convert("RGB")
+        image_buffer = io.BytesIO()
+        rgb_image.save(
+            image_buffer,
+            format="JPEG" if normalized_format == "jpeg" else "PNG",
+        )
+        image_bytes = image_buffer.getvalue()
+
+    return base64.b64encode(image_bytes).decode("utf-8")
+
+
+def render_document_to_images(
+    file_path: str | Path,
+    *,
+    dpi: int = DEFAULT_OCR_DPI,
+    fmt: str = DEFAULT_OCR_IMAGE_FORMAT,
+) -> list[str]:
+    """Render a supported document into one or more base64-encoded page images."""
+    file_path = Path(file_path)
+    extension = file_path.suffix.lower()
+    if extension == ".pdf":
+        with fitz.open(file_path) as doc:
+            return [
+                render_page_to_image(doc, page_index, dpi=dpi, fmt=fmt)
+                for page_index in range(len(doc))
+            ]
+
+    if extension in SUPPORTED_OCR_IMAGE_EXTENSIONS:
+        return [render_image_to_image(file_path, fmt=fmt)]
+
+    raise ValueError(
+        f"Unsupported OCR input format for '{file_path.name}': {file_path.suffix or '<none>'}"
+    )
 
 
 def _ocr_page(
@@ -491,11 +670,11 @@ def convert_file(
     max_workers: int = DEFAULT_OCR_MAX_WORKERS,
     max_retries: int = DEFAULT_OCR_MAX_RETRIES,
 ) -> Path:
-    """Convert a PDF file to raw per-page OCR JSON.
+    """Convert a supported document file to raw per-page OCR JSON.
 
     Args:
         client: OpenRouter API client.
-        file_path: Input PDF path.
+        file_path: Input document path (PDF or supported image).
         output_dir: Base output directory.
         out_name: Optional output filename stem.
         model: Vision model identifier.
@@ -528,11 +707,7 @@ def convert_file(
         temperature=temperature,
         max_tokens=max_tokens,
     )
-    with fitz.open(file_path) as doc:
-        page_count = len(doc)
-        page_images = [
-            render_page_to_image(doc, i, dpi=dpi, fmt=fmt) for i in range(page_count)
-        ]
+    page_images = render_document_to_images(file_path, dpi=dpi, fmt=fmt)
 
     page_markdowns: list[str | None] = [None] * len(page_images)
 
@@ -613,11 +788,13 @@ def ocr_documents(
     max_tokens: int = DEFAULT_OCR_MAX_TOKENS,
     max_workers: int = DEFAULT_OCR_MAX_WORKERS,
     max_retries: int = DEFAULT_OCR_MAX_RETRIES,
+    recursive: bool = True,
+    documents: list[OCRInputDocument] | None = None,
 ) -> list[Path]:
-    """OCR all pending PDFs in a directory.
+    """OCR all pending documents in a directory.
 
     Args:
-        docs_dir: Directory containing PDFs.
+        docs_dir: Directory containing supported OCR documents.
         out_dir: Base output directory.
         api_key: Optional OpenRouter API key override.
         model: Vision model identifier.
@@ -628,35 +805,41 @@ def ocr_documents(
         max_tokens: Maximum output tokens per page.
         max_workers: OCR worker thread count.
         max_retries: OCR retry attempts per page.
+        recursive: Whether to scan docs_dir recursively.
+        documents: Optional precomputed pending documents from check_conversions.
 
     Returns:
         Paths of written raw OCR JSON files.
     """
-    to_convert = check_conversions(
-        docs_dir=docs_dir,
-        out_dir=out_dir,
-        model=model,
-        dpi=dpi,
-        fmt=fmt,
-        prompt=prompt,
-        temperature=temperature,
-        max_tokens=max_tokens,
-    )
+    to_convert = documents
+    if to_convert is None:
+        to_convert = check_conversions(
+            docs_dir=docs_dir,
+            out_dir=out_dir,
+            model=model,
+            dpi=dpi,
+            fmt=fmt,
+            prompt=prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            recursive=recursive,
+        )
+
     if not to_convert:
         print("No files need conversion. Exiting.")
         return []
 
-    print(f"Beginning conversion of ({len(to_convert)}) files.")
+    print(f"Beginning conversion of ({len(to_convert)}) documents.")
     client = create_client(api_key=api_key)
     outputs: list[Path] = []
 
-    for pdf_path in tqdm(to_convert, desc="Converting files"):
+    for document in tqdm(to_convert, desc="Converting documents"):
         outputs.append(
             convert_file(
                 client,
-                pdf_path,
+                document.path,
                 output_dir=out_dir,
-                out_name=pdf_path.stem,
+                out_name=document.output_name,
                 model=model,
                 dpi=dpi,
                 fmt=fmt,

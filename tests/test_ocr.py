@@ -10,6 +10,7 @@ from pathlib import Path
 
 import fitz
 import pytest
+from PIL import Image
 
 import vlmocr.ocr as ocr_module
 from vlmocr.ocr import create_client, get_pdf_info, render_page_to_image
@@ -27,6 +28,11 @@ def _create_test_pdf(num_pages: int) -> str:
     doc.save(path)
     doc.close()
     return path
+
+
+def _create_test_image(path: Path, *, fmt: str = "PNG") -> None:
+    image = Image.new("RGB", (16, 12), color=(80, 120, 200))
+    image.save(path, format=fmt)
 
 
 def test_get_pdf_info() -> None:
@@ -176,6 +182,40 @@ def test_convert_file_writes_raw_json_contract(
     }
 
 
+def test_convert_file_supports_image_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """convert_file should treat a supported image as a one-page document."""
+    image_path = tmp_path / "sample.png"
+    _create_test_image(image_path)
+
+    monkeypatch.setattr(
+        ocr_module,
+        "_ocr_page",
+        lambda client,
+        base64_image,
+        model=None,
+        fmt=None,
+        prompt=None,
+        temperature=None,
+        max_tokens=None: "# Image page",
+    )
+
+    output_path = ocr_module.convert_file(
+        client=object(),
+        file_path=image_path,
+        output_dir=tmp_path,
+        out_name="sample",
+        max_workers=1,
+    )
+
+    assert output_path == tmp_path / "json" / "raw" / "sample.json"
+    assert json.loads(output_path.read_text(encoding="utf-8")) == {
+        "settings_hash": ocr_module.hash_ocr_settings(),
+        "pages": [{"index": 0, "markdown": "# Image page"}],
+    }
+
+
 def test_check_conversions_skips_only_matching_settings_hash(tmp_path: Path) -> None:
     """check_conversions should only skip files whose raw JSON matches current OCR settings."""
     docs_dir = tmp_path / "docs"
@@ -201,17 +241,90 @@ def test_check_conversions_skips_only_matching_settings_hash(tmp_path: Path) -> 
         encoding="utf-8",
     )
 
-    assert ocr_module.check_conversions(
+    pending = ocr_module.check_conversions(
         docs_dir=docs_dir,
         out_dir=out_dir,
         model="test-model",
         dpi=300,
         fmt="jpeg",
-    ) == [
+        output_fn=lambda message: None,
+    )
+
+    assert [document.path for document in pending] == [
         docs_dir / "changed.pdf",
         docs_dir / "legacy.pdf",
         docs_dir / "missing.pdf",
     ]
+    assert [document.output_name for document in pending] == [
+        "changed",
+        "legacy",
+        "missing",
+    ]
+
+
+def test_check_conversions_uses_extension_suffixes_for_same_stem(tmp_path: Path) -> None:
+    """Same-stem mixed inputs should receive deterministic extension-suffixed output names."""
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    out_dir = tmp_path / "converted"
+
+    (docs_dir / "report.pdf").write_bytes(b"")
+    (docs_dir / "report.png").write_bytes(b"")
+
+    pending = ocr_module.check_conversions(
+        docs_dir=docs_dir,
+        out_dir=out_dir,
+        output_fn=lambda message: None,
+    )
+
+    assert [(document.path.name, document.output_name) for document in pending] == [
+        ("report.pdf", "report__pdf"),
+        ("report.png", "report__png"),
+    ]
+
+
+def test_check_conversions_recursive_and_warns_for_skipped_formats(tmp_path: Path) -> None:
+    """Discovery should recurse and warn for explicitly skipped TIFF/GIF inputs."""
+    docs_dir = tmp_path / "docs"
+    nested_dir = docs_dir / "nested"
+    nested_dir.mkdir(parents=True)
+    out_dir = tmp_path / "converted"
+
+    (nested_dir / "deep.pdf").write_bytes(b"")
+    (docs_dir / "top.jpg").write_bytes(b"")
+    (docs_dir / "skip.gif").write_bytes(b"")
+
+    warnings: list[str] = []
+    pending = ocr_module.check_conversions(
+        docs_dir=docs_dir,
+        out_dir=out_dir,
+        output_fn=warnings.append,
+    )
+
+    assert [document.path for document in pending] == [
+        nested_dir / "deep.pdf",
+        docs_dir / "top.jpg",
+    ]
+    assert any("Skipping unsupported document format" in warning for warning in warnings)
+
+
+def test_discover_ocr_documents_can_disable_recursion(tmp_path: Path) -> None:
+    """Non-recursive discovery should ignore nested files."""
+    docs_dir = tmp_path / "docs"
+    nested_dir = docs_dir / "nested"
+    nested_dir.mkdir(parents=True)
+
+    (docs_dir / "top.pdf").write_bytes(b"")
+    (nested_dir / "deep.pdf").write_bytes(b"")
+
+    recursive_docs, _ = ocr_module.discover_ocr_documents(docs_dir, recursive=True)
+    top_level_docs, _ = ocr_module.discover_ocr_documents(docs_dir, recursive=False)
+
+    assert [document.path for document in recursive_docs] == [
+        nested_dir / "deep.pdf",
+        docs_dir / "top.pdf",
+    ]
+    assert [document.path for document in top_level_docs] == [docs_dir / "top.pdf"]
 
 
 def test_read_and_write_ocr_prompt_round_trip(

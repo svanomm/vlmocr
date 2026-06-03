@@ -1,110 +1,103 @@
 # vlmocr
 
-`vlmocr` turns PDFs into clean, reusable text files.
+`vlmocr` turns PDFs and images into Markdown using vision-language models (VLMs). We provide a flexible framework that allows you to pick from built-in OCR templates and easily create your own.
 
-The pipeline is simple: it takes a PDF, renders each page as an image, uses a vision-language model (VLM) to extract structured data, and then saves the result locally as:
+## Why vlmocr uses VLMs for OCR
 
-- Markdown for humans to read and edit
-- JSON for scripts, pipelines, or downstream tools
+Traditional OCR struggles with mixed layout pages (tables, footnotes, figures, multicolumn text, math). VLMs are much better at preserving structure and meaning across the whole page, or can transform page content into structured formats.
 
-This repo is useful when you have scanned papers, reports, manuals, or image-heavy PDFs that are hard to search, copy from, or repurpose. Any math in the paper gets converted to LaTeX, and figures/charts are given plain-text descriptions.
+The default OCR model is Gemini 3.1 Flash Lite via OpenRouter for strong quality-cost tradeoffs, but you can use any VLM served by OpenRouter.
 
-Under the hood, `vlmocr` splits your PDFs into page images and sends them to OpenRouter-served VLMs, then converts the results into cleaned Markdown. Gemini 3.1 Flash Lite is the default model based on its very high performance on [socOCRBench](https://noahdasanaike.github.io/posts/sococrbench.html) and cost effectiveness. With current API pricing, I am seeing an average of around **$1.50 per 1000 pages** of OCR.
+## Pipeline overview
 
-(Want to test out `vlmocr` for free? Try selecting [a free model from OpenRouter](https://openrouter.ai/models?output_modalities=text&input_modalities=image&max_price=0)!
+The standard flow is:
 
-## Why this project uses VLMs for OCR
+1. Put supported documents in the docs folder (.pdf, .jpg, .jpeg, .png, .webp, .bmp).
+2. Use the CLI to write raw per-page JSON under converted/json/raw.
+3. Run conversion to clean output and write:
+	 - merged Markdown under converted/md
+	 - cleaned page-level JSON under converted/json
+	 - a headings-only TOC under converted/md/table of contents
 
-Traditional OCR systems struggle when a page includes things like:
+Discovery is recursive by default under docs. TIFF/GIF inputs are currently skipped with warnings.
 
-- multi-column layouts
-- tables
-- footnotes
-- charts, diagrams, or figures
-- mixed formatting such as headings, bold text, code, or math
+## Prompt template framework
 
-VLMs are better for this kind of document OCR because they do not only identify characters one by one, but instead look at the whole page and reason about layout and meaning. This makes them better at:
+### Built-in templates
 
-- preserving reading order
-- recognizing headings and document structure
-- reconstructing tables in Markdown
-- describing non-text visuals such as figures and charts
-- keeping footnotes connected to the places where they are referenced
-
-An additional benefit of using a general-purpose multimodal VLM is that you can prompt it with custom instructions: write text descriptions of charts, convert math to LaTeX, and much more. `vlmocr` now ships with multiple OCR prompt templates and lets you create your own from the CLI.
-
-## Markdown conventions used by this repo
-
-The OCR prompt in this repo asks the model to produce Markdown, but it also asks for a few extra tags so the output keeps document structure that plain Markdown would otherwise lose.
-
-### Footnote tagging
-
-Inline footnote references are wrapped like this:
+Built-in templates live in src/vlmocr/prompts. Each template is a Markdown file with optional front matter metadata:
 
 ```md
-The sample was preserved at low temperature.<ref num="1"/>
+---
+description: OCR profile focused on table fidelity.
+---
+
+Your OCR instructions go here.
 ```
 
-The matching footnote text is wrapped like this:
+### How template selection works
+
+- Interactive OCR: if you run OCR in an interactive terminal without --prompt-template, vlmocr prompts you to choose a template.
+- In that prompt picker, you can also create a new template immediately and use it for the current run.
+- Non-interactive OCR without --prompt-template falls back to the default template.
+
+Direct template selection from command line:
+
+```bash
+uv run vlmocr ocr --prompt-template academic-with-footnotes
+```
+
+### Creating your own templates
+
+1. Create a template from the interactive OCR template picker (includes description and prompt body).
+2. Add a new .md file to src/vlmocr/prompts manually.
+3. We also provide an LLM prompt to generate new templates through an interview process. You can run it as a slash command in VS Code "/create-ocr-template".
+
+Template names are normalized to safe slugs (for example, Economic Tables -> economic-tables).
+
+## Markdown conventions in OCR output
+
+The academic template uses explicit tags to preserve information plain Markdown can lose.
+
+Footnote references:
 
 ```md
-<note num="1">Stored at 4 C until analysis.</note>
+Text in the paragraph.<ref num="1"/>
 ```
 
-This is useful because it keeps a clear machine-readable connection between the footnote marker in the main text and the footnote content itself. By default, `vlmocr convert` expands those references inline so the cleaned Markdown becomes easier for non-technical readers and text-processing tools to follow, for example:
+Footnote body:
 
 ```md
-The sample was preserved at low temperature. [Footnote 1: Stored at 4 C until analysis.]
+<note num="1">Footnote text here.</note>
 ```
 
-If you want to keep the original `<ref>` and `<note>` tags instead, use `--no-inject-footnotes`. You could also customize `vlmocr` to move all footnote text to the bottom of the document, for example.
-
-### Figure descriptions
-
-When a page contains a figure, chart, diagram, or other non-text visual, the model is asked to describe it inside `<image>` tags:
+By default, convert injects footnotes inline and removes the note blocks:
 
 ```md
-<image>Bar chart comparing quarterly revenue across four regions; the west region is highest in Q3 and Q4.</image>
+Text in the paragraph. [Footnote 1: Footnote text here.]
 ```
 
-This is useful because normal OCR only captures visible text. It usually does not preserve what a chart, figure, or diagram actually shows.
+Use --no-inject-footnotes to keep original <ref> and <note> tags.
 
-The figure-description convention helps by:
+For non-text visuals, templates can request descriptions inside image tags:
 
-- keeping important visual meaning in a text-only output format
-- making the converted document more searchable
-- improving accessibility for readers who cannot inspect the original image easily
-- giving downstream LLM or indexing workflows more context about the page
-
-Figure captions are still preserved as ordinary text, so you keep both the original caption and a structured description of the visual content.
-
-## What the cleaned output is for
-
-After OCR runs, `vlmocr convert` cleans the raw output and writes:
-
-- Markdown files for reading, editing, and search
-- page-level JSON for accurate retrieval citations (e.g. you can provide specific page citations) 
-- a headings-only Markdown table of contents file for quick navigation
-
-The goal is not only to extract text, but to preserve as much of the document's structure and meaning as possible in formats that are easy to reuse.
+```md
+<image>Concise description of chart or figure content.</image>
+```
 
 ## Requirements
 
 - Python 3.12+
-- [`uv`](https://docs.astral.sh/uv/)
-- `OPENROUTER_API_KEY` for OCR commands
+- `uv`
+- OpenRouter API key for OCR commands
 
-Install the repo environment:
+Install dependencies:
 
 ```bash
 uv sync
 ```
 
-OpenRouter setup for first-time users:
-
-1. Create an account at `https://openrouter.ai/` if you do not already have one.
-2. Create an API key at `https://openrouter.ai/keys`.
-3. Put the key in a `.env` file in the project root:
+Set your API key in a project-root .env file:
 
 ```bash
 OPENROUTER_API_KEY=your_key_here
@@ -112,34 +105,79 @@ OPENROUTER_API_KEY=your_key_here
 
 ## Commands
 
+Interactive launcher:
+
 ```bash
 uv run vlmocr
 ```
 
-This opens a terminal interface that lets you initialize the workspace, inspect the expected directory layout, and run the available commands with prompts.
-It also explains where to create an OpenRouter API key and how to store it before you run OCR.
+This menu includes:
 
-When you run OCR from the launcher (or from `vlmocr ocr` in an interactive terminal), you will be asked which OCR prompt template to use.
-The prompt list shows each template name with a short description, includes a default option, and also includes an in-CLI flow to create a new template.
+- init workflow
+- OCR workflow with template selection and template creation
+- conversion workflow
+- project structure validation
+- quickstart help
+- show/edit default OCR prompt
 
-Built-in templates are stored as Markdown files in `src/vlmocr/prompts/`.
-You can pass a template directly in command mode with:
+Command mode:
 
 ```bash
-uv run vlmocr ocr --prompt-template default
+# OCR
+uv run vlmocr ocr --docs-dir docs --out-dir converted --prompt-template default
+uv run vlmocr ocr --docs-dir docs --out-dir converted --no-recursive
+
+# Convert raw OCR JSON (defaults to converted/json/raw)
+uv run vlmocr convert --out-dir converted
+
+# Optional conversion controls
+uv run vlmocr convert --remove-frequent-lines
+uv run vlmocr convert --no-inject-footnotes
+
+# Estimate OCR cost from mixed documents in docs
+uv run vlmocr estimate-cost --docs-dir docs
+uv run vlmocr estimate-cost --docs-dir docs --no-recursive
 ```
 
-## Defaults and options
+## Supported OCR inputs
 
-Environment overrides:
+- Supported now: PDF, JPG/JPEG, PNG, WEBP, BMP
+- Skipped in this phase: TIFF/TIF, GIF
+- For same-stem mixed files, raw JSON uses extension suffixes to avoid collisions
+	- example: report.pdf -> report__pdf.json and report.png -> report__png.json
 
-- `OPENROUTER_API_KEY`
-- `VLMOCR_MODEL`
-- `VLMOCR_DPI`
-- `VLMOCR_IMAGE_FORMAT`
-- `VLMOCR_MAX_TOKENS`
-- `VLMOCR_MAX_WORKERS`
-- `VLMOCR_MAX_RETRIES`
+## Workspace layout
+
+vlmocr uses this default structure:
+
+```text
+docs/
+converted/
+	json/
+		raw/                 # raw per-page OCR output from vlmocr ocr
+	md/
+	md/table of contents/
+```
+
+## OCR settings and rerun behavior
+
+Raw OCR JSON stores a settings_hash that includes model, DPI, image format, prompt text, temperature, and max tokens.
+
+This means:
+
+- unchanged files with matching settings are skipped
+- changing template or OCR settings causes affected documents to be reprocessed
+
+Environment variable overrides:
+
+- OPENROUTER_API_KEY
+- VLMOCR_MODEL
+- VLMOCR_DPI
+- VLMOCR_IMAGE_FORMAT
+- VLMOCR_MAX_TOKENS
+- VLMOCR_MAX_WORKERS
+- VLMOCR_MAX_RETRIES
 
 ## License
+
 MIT License.

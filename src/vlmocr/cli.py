@@ -164,7 +164,7 @@ def _render_menu(*, ansi_enabled: bool) -> str:
         out_line,
         "",
         "[1] Init project structure",
-        "[2] Run OCR on PDFs",
+        "[2] Run OCR on documents (PDF + images)",
         "[3] Convert raw OCR JSON",
         "[4] Validate current structure",
         "[5] Show quickstart",
@@ -194,7 +194,7 @@ def build_parser() -> argparse.ArgumentParser:
     """
     parser = argparse.ArgumentParser(
         prog="vlmocr",
-        description="PDF OCR, conversion, and OCR cost estimation.",
+        description="Document OCR (PDF + images), conversion, and OCR cost estimation.",
     )
     subparsers = parser.add_subparsers(dest="command")
 
@@ -206,7 +206,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     ocr_parser = subparsers.add_parser(
         "ocr",
-        help="Render PDFs and write raw per-page OCR JSON.",
+        help="Render documents (PDF + images) and write raw per-page OCR JSON.",
     )
     ocr_parser.add_argument("--docs-dir", type=Path, default=DEFAULT_DOCS_DIR)
     ocr_parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
@@ -236,6 +236,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=ocr.DEFAULT_OCR_MAX_RETRIES,
     )
+    ocr_parser.add_argument(
+        "--no-recursive",
+        dest="recursive",
+        action="store_false",
+        help="Only scan the top level of --docs-dir for OCR inputs.",
+    )
+    ocr_parser.set_defaults(recursive=True)
 
     convert_parser = subparsers.add_parser(
         "convert",
@@ -266,6 +273,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Estimate OCR-only page and token costs.",
     )
     estimate_parser.add_argument("--docs-dir", type=Path, default=DEFAULT_DOCS_DIR)
+    estimate_parser.add_argument(
+        "--no-recursive",
+        dest="recursive",
+        action="store_false",
+        help="Only scan the top level of --docs-dir when estimating cost.",
+    )
+    estimate_parser.set_defaults(recursive=True)
 
     return parser
 
@@ -280,7 +294,11 @@ def _format_quickstart(docs_dir: Path, out_dir: Path) -> str:
                 "  2. Save it in a `.env` file in your project root as "
                 "`OPENROUTER_API_KEY=your_key_here`, or pass it with `--api-key`"
             ),
-            f"  3. Put PDF files in {docs_dir}",
+            (
+                f"  3. Put supported documents in {docs_dir} "
+                "(.pdf, .jpg, .jpeg, .png, .webp, .bmp; recursive by default)"
+            ),
+            "     TIFF/GIF files are currently skipped with warnings.",
             (
                 "  4. Run "
                 f"`vlmocr ocr --docs-dir {docs_dir} --out-dir {out_dir}` to write raw OCR JSON"
@@ -373,7 +391,7 @@ def _friendly_error_message(args: argparse.Namespace, exc: Exception) -> str:
                 "",
                 f"Run `vlmocr init --out-dir {args.out_dir}` to create the standard folders.",
                 (
-                    "If you are starting from PDFs, add them to "
+                    "If you are starting from source documents, add them to "
                     f"{DEFAULT_DOCS_DIR} and run `vlmocr ocr --out-dir {args.out_dir}` first."
                 ),
                 f"If you already have raw OCR JSON, place it in {input_dir} and rerun convert.",
@@ -401,7 +419,11 @@ def _friendly_error_message(args: argparse.Namespace, exc: Exception) -> str:
                     f"Run `vlmocr init --docs-dir {args.docs_dir} --out-dir {args.out_dir}` "
                     "to create the standard folders."
                 ),
-                f"Then add PDF files to {args.docs_dir} and rerun the OCR command.",
+                (
+                    f"Then add supported documents to {args.docs_dir} "
+                    "(.pdf, .jpg, .jpeg, .png, .webp, .bmp) and rerun OCR."
+                ),
+                "TIFF/GIF files are currently skipped with warnings.",
                 "",
             ]
         )
@@ -431,6 +453,7 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> N
                 prompt=prompt_text,
                 max_workers=args.max_workers,
                 max_retries=args.max_retries,
+                recursive=args.recursive,
             )
             return
 
@@ -444,7 +467,7 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> N
             return
 
         if args.command == "estimate-cost":
-            estimate_cost.count_pages(args.docs_dir)
+            estimate_cost.count_pages(args.docs_dir, recursive=args.recursive)
             return
     except (FileNotFoundError, ValueError) as exc:
         parser.exit(status=2, message=_friendly_error_message(args, exc))
@@ -662,13 +685,14 @@ def _run_interactive_ocr(
             dpi=dpi,
             fmt=fmt,
             prompt=prompt_text,
+            output_fn=output_fn,
         )
         if not to_convert:
             output_fn("No files need conversion.")
             return
 
         estimated_cost = estimate_cost.count_pages_for_files(
-            to_convert,
+            [document.path for document in to_convert],
             output_fn=output_fn,
             source_label=f"{docs_dir} (pending OCR)",
         )
@@ -693,6 +717,7 @@ def _run_interactive_ocr(
             prompt=prompt_text,
             max_workers=max_workers,
             max_retries=max_retries,
+            documents=to_convert,
         )
     except (FileNotFoundError, ValueError) as exc:
         output_fn(
