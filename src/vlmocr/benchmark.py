@@ -36,6 +36,7 @@ _BENCHMARK_MANIFEST_FILENAME = "manifest.json"
 _BENCHMARK_DATABASE_SUBPATH = Path("benchmark/history.db")
 _BENCHMARK_REPORTS_SUBPATH = Path("benchmark/reports")
 _BENCHMARK_CANDIDATES_SUBPATH = Path("benchmark/candidates")
+_BENCHMARK_DOCS_SUBPATH = Path("benchmark")
 
 OVERALL_TEXT_WEIGHT = 0.45
 OVERALL_MATH_WEIGHT = 0.40
@@ -185,6 +186,13 @@ def _slugify_model_name(model: str) -> str:
     return slug or "model"
 
 
+def _normalize_document_reference(document: str) -> str:
+    normalized = document.replace("\\", "/").strip()
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized
+
+
 def get_default_benchmark_root(*, out_dir: Path = DEFAULT_OUT_DIR) -> Path:
     """Return the default benchmark root under the output directory."""
     return out_dir / _BENCHMARK_SUBDIR / DEFAULT_BENCHMARK_NAME
@@ -305,6 +313,114 @@ def load_manifest(manifest_path: Path) -> BenchmarkManifest:
     )
 
 
+def _extract_single_page_pdf(
+    *,
+    source_pdf: Path,
+    page: int,
+    output_pdf: Path,
+) -> None:
+    if page < 1:
+        raise ValueError(f"PDF page must be >= 1, got {page}.")
+
+    with fitz.open(source_pdf) as source_doc:
+        if page > len(source_doc):
+            raise ValueError(
+                f"Requested page {page} for '{source_pdf.name}', but document has only {len(source_doc)} pages."
+            )
+
+        single_page_doc = fitz.open()
+        single_page_doc.insert_pdf(source_doc, from_page=page - 1, to_page=page - 1)
+        output_pdf.parent.mkdir(parents=True, exist_ok=True)
+        single_page_doc.save(output_pdf)
+        single_page_doc.close()
+
+
+def verify_benchmark_gold_for_pdf_folder(
+    *,
+    docs_dir: Path = DEFAULT_DOCS_DIR,
+    manifest_path: Path,
+    benchmark_subpath: Path = _BENCHMARK_DOCS_SUBPATH,
+    require_folder: bool = True,
+    output_fn: OutputFunc = print,
+) -> dict[str, int]:
+    """Verify that each PDF in docs/benchmark has a matching manifest case and gold JSON."""
+    docs_dir = Path(docs_dir)
+    manifest_path = Path(manifest_path)
+    benchmark_dir = docs_dir / benchmark_subpath
+
+    if not benchmark_dir.exists():
+        if require_folder:
+            raise FileNotFoundError(
+                f"Benchmark documents folder not found: {benchmark_dir}"
+            )
+        return {"pdf_count": 0, "verified_count": 0}
+
+    benchmark_pdfs = sorted(benchmark_dir.glob("*.pdf"))
+    if not benchmark_pdfs:
+        if require_folder:
+            raise ValueError(f"No benchmark PDFs found in {benchmark_dir}")
+        return {"pdf_count": 0, "verified_count": 0}
+
+    manifest = load_manifest(manifest_path)
+    case_by_document = {
+        _normalize_document_reference(case.document): case for case in manifest.cases
+    }
+
+    benchmark_prefix = benchmark_subpath.as_posix().rstrip("/") + "/"
+    missing_pdf_for_case: list[str] = []
+    for case in manifest.cases:
+        normalized_document = _normalize_document_reference(case.document)
+        if not normalized_document.startswith(benchmark_prefix):
+            continue
+        if not (docs_dir / Path(normalized_document)).exists():
+            missing_pdf_for_case.append(normalized_document)
+
+    if missing_pdf_for_case:
+        missing_lines = "\n".join(f"  - {item}" for item in missing_pdf_for_case)
+        raise FileNotFoundError(
+            "Manifest cases reference missing benchmark PDFs:\n"
+            f"{missing_lines}"
+        )
+
+    missing_case_entries: list[str] = []
+    missing_gold: list[str] = []
+    verified_count = 0
+
+    for pdf_path in benchmark_pdfs:
+        relative_document = pdf_path.relative_to(docs_dir).as_posix()
+        case = case_by_document.get(relative_document)
+        if case is None:
+            missing_case_entries.append(relative_document)
+            continue
+
+        gold_path = (manifest_path.parent / case.gold_json).resolve()
+        if not gold_path.exists():
+            missing_gold.append(relative_document)
+            continue
+
+        _load_raw_ocr_payload(gold_path)
+        verified_count += 1
+
+    if missing_case_entries:
+        missing_lines = "\n".join(f"  - {item}" for item in missing_case_entries)
+        raise ValueError(
+            "Benchmark PDFs missing manifest case entries:\n"
+            f"{missing_lines}"
+        )
+
+    if missing_gold:
+        missing_lines = "\n".join(f"  - {item}" for item in missing_gold)
+        raise FileNotFoundError(
+            "Benchmark PDFs missing converted gold JSON references:\n"
+            f"{missing_lines}"
+        )
+
+    output_fn(
+        f"Verified gold JSON for {verified_count} benchmark PDFs in {benchmark_dir}."
+    )
+    return {"pdf_count": len(benchmark_pdfs), "verified_count": verified_count}
+
+
 def initialize_academic_benchmark(
     *,
     docs_dir: Path = DEFAULT_DOCS_DIR,
@@ -315,11 +431,12 @@ def initialize_academic_benchmark(
     preset_cases: list[dict[str, Any]] | None = None,
     output_fn: OutputFunc = print,
 ) -> Path:
-    """Create the local academic benchmark manifest and one-page gold files."""
+    """Create the local academic benchmark manifest, docs/benchmark PDFs, and one-page gold files."""
     docs_dir = Path(docs_dir)
     out_dir = Path(out_dir)
     resolved_manifest_path = Path(manifest_path or get_default_manifest_path(out_dir=out_dir))
     resolved_raw_dir = Path(raw_dir or (out_dir / "json" / "raw"))
+    benchmark_docs_dir = docs_dir / _BENCHMARK_DOCS_SUBPATH
 
     if resolved_manifest_path.exists() and not overwrite:
         raise ValueError(
@@ -330,6 +447,7 @@ def initialize_academic_benchmark(
     if not selected_cases:
         raise ValueError("Benchmark preset must include at least one case.")
 
+    benchmark_docs_dir.mkdir(parents=True, exist_ok=True)
     gold_dir = resolved_manifest_path.parent / _BENCHMARK_GOLD_SUBDIR
     gold_dir.mkdir(parents=True, exist_ok=True)
 
@@ -347,6 +465,13 @@ def initialize_academic_benchmark(
             raise FileNotFoundError(
                 f"Benchmark source document not found: {source_document}"
             )
+
+        case_pdf_path = benchmark_docs_dir / f"{case_id}.pdf"
+        _extract_single_page_pdf(
+            source_pdf=source_document,
+            page=page,
+            output_pdf=case_pdf_path,
+        )
 
         source_raw = resolved_raw_dir / f"{stem}.json"
         if not source_raw.exists():
@@ -371,11 +496,13 @@ def initialize_academic_benchmark(
         manifest_cases.append(
             {
                 "id": case_id,
-                "document": source_document.name,
-                "page": page,
+                "document": case_pdf_path.relative_to(docs_dir).as_posix(),
+                "page": 1,
                 "gold_json": gold_path.relative_to(resolved_manifest_path.parent).as_posix(),
                 "tags": tags,
                 "note": note,
+                "source_document": source_document.name,
+                "source_page": page,
             }
         )
 
@@ -388,7 +515,16 @@ def initialize_academic_benchmark(
 
     _write_json(resolved_manifest_path, manifest_payload)
 
+    verification = verify_benchmark_gold_for_pdf_folder(
+        docs_dir=docs_dir,
+        manifest_path=resolved_manifest_path,
+        benchmark_subpath=_BENCHMARK_DOCS_SUBPATH,
+        require_folder=True,
+        output_fn=output_fn,
+    )
+
     output_fn(f"Wrote benchmark manifest: {resolved_manifest_path}")
+    output_fn(f"Wrote {verification['pdf_count']} one-page benchmark PDFs to: {benchmark_docs_dir}")
     output_fn(f"Wrote {len(manifest_cases)} one-page gold files to: {gold_dir}")
     output_fn(
         "Review the generated gold files manually before treating scores as authoritative."
@@ -900,6 +1036,16 @@ def run_benchmark(
     manifest_path = Path(manifest_path)
 
     manifest = load_manifest(manifest_path)
+
+    benchmark_docs_dir = docs_dir / _BENCHMARK_DOCS_SUBPATH
+    if benchmark_docs_dir.exists():
+        verify_benchmark_gold_for_pdf_folder(
+            docs_dir=docs_dir,
+            manifest_path=manifest_path,
+            benchmark_subpath=_BENCHMARK_DOCS_SUBPATH,
+            require_folder=False,
+            output_fn=output_fn,
+        )
 
     selected_cases = list(manifest.cases)
     if case_ids:

@@ -13,10 +13,11 @@ from vlmocr import benchmark
 from vlmocr.contract import build_raw_ocr_document, validate_raw_ocr_document
 
 
-def _create_test_pdf(path: Path, *, text: str = "Page one") -> None:
+def _create_test_pdf(path: Path, *, text: str = "Page one", pages: int = 1) -> None:
     doc = fitz.open()
-    page = doc.new_page()
-    page.insert_text((72, 72), text)
+    for page_index in range(pages):
+        page = doc.new_page()
+        page.insert_text((72, 72), f"{text} {page_index + 1}")
     doc.save(path)
     doc.close()
 
@@ -57,7 +58,7 @@ def test_initialize_academic_benchmark_creates_one_page_gold(
     raw_dir = tmp_path / "converted" / "json" / "raw"
     raw_dir.mkdir(parents=True)
 
-    _create_test_pdf(docs_dir / "sample.pdf")
+    _create_test_pdf(docs_dir / "sample.pdf", pages=2)
 
     raw_payload = {
         "settings_hash": "seed-hash",
@@ -95,13 +96,53 @@ def test_initialize_academic_benchmark_creates_one_page_gold(
     assert len(loaded_manifest.cases) == 1
 
     case = loaded_manifest.cases[0]
-    assert case.document == "sample.pdf"
-    assert case.page == 2
+    assert case.document == "benchmark/sample_case.pdf"
+    assert case.page == 1
+
+    benchmark_pdf_path = docs_dir / case.document
+    assert benchmark_pdf_path.exists()
+    with fitz.open(benchmark_pdf_path) as doc:
+        assert len(doc) == 1
 
     gold_path = manifest_path.parent / case.gold_json
     gold_payload = validate_raw_ocr_document(json.loads(gold_path.read_text(encoding="utf-8")))
 
     assert gold_payload["pages"] == [{"index": 0, "markdown": "Page 2 body with $x^2$"}]
+
+
+def test_verify_benchmark_gold_for_pdf_folder_detects_missing_gold(
+    tmp_path: Path,
+) -> None:
+    docs_dir = tmp_path / "docs"
+    benchmark_dir = docs_dir / "benchmark"
+    benchmark_dir.mkdir(parents=True)
+    _create_test_pdf(benchmark_dir / "case1.pdf")
+
+    manifest_path = tmp_path / "bench" / "manifest.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_payload = {
+        "name": "test-benchmark",
+        "version": "1.0",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "cases": [
+            {
+                "id": "case1",
+                "document": "benchmark/case1.pdf",
+                "page": 1,
+                "gold_json": "gold/missing.json",
+                "tags": [],
+                "note": "missing gold",
+            }
+        ],
+    }
+    manifest_path.write_text(json.dumps(manifest_payload), encoding="utf-8")
+
+    with pytest.raises(FileNotFoundError, match="missing converted gold JSON"):
+        benchmark.verify_benchmark_gold_for_pdf_folder(
+            docs_dir=docs_dir,
+            manifest_path=manifest_path,
+            output_fn=lambda message: None,
+        )
 
 
 def test_benchmark_history_database_records_incremental_results(
@@ -181,8 +222,9 @@ def test_run_benchmark_writes_report_and_history(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     docs_dir = tmp_path / "docs"
-    docs_dir.mkdir()
-    _create_test_pdf(docs_dir / "sample.pdf", text="Benchmark page")
+    benchmark_docs_dir = docs_dir / "benchmark"
+    benchmark_docs_dir.mkdir(parents=True)
+    _create_test_pdf(benchmark_docs_dir / "case1.pdf", text="Benchmark page")
 
     bench_root = tmp_path / "bench"
     gold_dir = bench_root / "gold"
@@ -202,7 +244,7 @@ def test_run_benchmark_writes_report_and_history(
         "cases": [
             {
                 "id": "case1",
-                "document": "sample.pdf",
+                "document": "benchmark/case1.pdf",
                 "page": 1,
                 "gold_json": "gold/case1.json",
                 "tags": ["math"],

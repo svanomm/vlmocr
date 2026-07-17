@@ -157,6 +157,8 @@ uv run vlmocr benchmark --out-dir converted --case-limit 1
 
 - `manifest.json` with 10 fixed difficult cases (math/table/footnote/image-heavy)
 - `gold/*.json` one-page expected outputs for deterministic scoring
+- `docs/benchmark/*.pdf` one-page benchmark review PDFs (one file per selected case)
+- automatic verification that each PDF in `docs/benchmark` has a matching gold JSON
 
 `benchmark` then:
 
@@ -165,6 +167,7 @@ uv run vlmocr benchmark --out-dir converted --case-limit 1
 - scores candidate raw markdown against gold using deterministic text/math/structure metrics
 - writes run reports to `converted/benchmark/reports`
 - stores every run, model summary, and case result in `converted/benchmark/history.db`
+- verifies `docs/benchmark` integrity before running if that folder exists
 
 Because each case is one page, `--case-limit 1` is the recommended way to run cheap API validation checks.
 
