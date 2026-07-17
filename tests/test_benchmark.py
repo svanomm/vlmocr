@@ -21,6 +21,12 @@ def _create_test_pdf(path: Path, *, text: str = "Page one") -> None:
     doc.close()
 
 
+def test_academic_benchmark_preset_has_ten_unique_cases() -> None:
+    case_ids = [case["id"] for case in benchmark.ACADEMIC_BENCHMARK_PRESET]
+    assert len(case_ids) == 10
+    assert len(case_ids) == len(set(case_ids))
+
+
 def test_score_markdown_pair_perfect_match() -> None:
     markdown = """# Title\n\nEquation: $a+b=c$\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n"""
 
