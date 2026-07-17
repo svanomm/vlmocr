@@ -785,3 +785,130 @@ def test_main_ocr_missing_api_key_shows_setup_instructions(
     assert "https://openrouter.ai/keys" in captured.err
     assert "OPENROUTER_API_KEY" in captured.err
     assert "--api-key" in captured.err
+
+
+def test_main_dispatches_benchmark_init_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The benchmark-init-academic command should dispatch to benchmark setup."""
+    captured: dict[str, object] = {}
+
+    def fake_initialize_academic_benchmark(**kwargs: object) -> Path:
+        captured.update(kwargs)
+        return Path("manifest.json")
+
+    monkeypatch.setattr(
+        cli.benchmark,
+        "initialize_academic_benchmark",
+        fake_initialize_academic_benchmark,
+    )
+
+    cli.main(
+        [
+            "benchmark-init-academic",
+            "--docs-dir",
+            "docs",
+            "--out-dir",
+            "converted",
+            "--overwrite",
+        ]
+    )
+
+    assert captured["docs_dir"] == Path("docs")
+    assert captured["out_dir"] == Path("converted")
+    assert captured["raw_dir"] is None
+    assert captured["manifest_path"] is None
+    assert captured["overwrite"] is True
+
+
+def test_main_dispatches_benchmark_command_with_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Benchmark command should default to the OCR default model and default manifest path."""
+    captured: dict[str, object] = {}
+
+    def fake_default_manifest_path(*, out_dir: Path) -> Path:
+        return out_dir / "benchmark" / "manifest.json"
+
+    def fake_run_benchmark(**kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return {"run_id": 1}
+
+    monkeypatch.setattr(
+        cli.benchmark,
+        "get_default_manifest_path",
+        fake_default_manifest_path,
+    )
+    monkeypatch.setattr(cli.benchmark, "run_benchmark", fake_run_benchmark)
+
+    cli.main(["benchmark", "--docs-dir", "docs", "--out-dir", "converted"])
+
+    assert captured["manifest_path"] == Path("converted") / "benchmark" / "manifest.json"
+    assert captured["docs_dir"] == Path("docs")
+    assert captured["out_dir"] == Path("converted")
+    assert captured["models"] == [cli.ocr.DEFAULT_OCR_MODEL]
+    assert captured["prompt_template"] == cli.ocr.DEFAULT_OCR_PROMPT_TEMPLATE
+
+
+def test_main_dispatches_benchmark_command_with_explicit_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Benchmark command should pass through explicit models and run options."""
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        cli.benchmark,
+        "run_benchmark",
+        lambda **kwargs: captured.update(kwargs) or {"run_id": 2},
+    )
+
+    cli.main(
+        [
+            "benchmark",
+            "--manifest",
+            "bench/manifest.json",
+            "--docs-dir",
+            "docs",
+            "--out-dir",
+            "converted",
+            "--model",
+            "model-a",
+            "--model",
+            "model-b",
+            "--prompt-template",
+            "academic-with-footnotes",
+            "--dpi",
+            "220",
+            "--format",
+            "jpeg",
+            "--max-retries",
+            "4",
+            "--temperature",
+            "0.1",
+            "--max-tokens",
+            "1234",
+            "--case-limit",
+            "1",
+            "--case-id",
+            "case-a",
+            "--case-id",
+            "case-b",
+            "--database",
+            "bench/history.db",
+            "--reports-dir",
+            "bench/reports",
+        ]
+    )
+
+    assert captured["manifest_path"] == Path("bench/manifest.json")
+    assert captured["models"] == ["model-a", "model-b"]
+    assert captured["prompt_template"] == "academic-with-footnotes"
+    assert captured["dpi"] == 220
+    assert captured["fmt"] == "jpeg"
+    assert captured["max_retries"] == 4
+    assert captured["temperature"] == pytest.approx(0.1)
+    assert captured["max_tokens"] == 1234
+    assert captured["case_limit"] == 1
+    assert captured["case_ids"] == ["case-a", "case-b"]
+    assert captured["database_path"] == Path("bench/history.db")
+    assert captured["reports_dir"] == Path("bench/reports")

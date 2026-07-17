@@ -137,7 +137,36 @@ uv run vlmocr convert --no-inject-footnotes
 # Estimate OCR cost from mixed documents in docs
 uv run vlmocr estimate-cost --docs-dir docs
 uv run vlmocr estimate-cost --docs-dir docs --no-recursive
+
+# Build local academic benchmark data (10 difficult one-page cases)
+uv run vlmocr benchmark-init-academic --docs-dir docs --out-dir converted
+
+# Run benchmark for one model
+uv run vlmocr benchmark --out-dir converted --model google/gemini-3.1-flash-lite-preview
+
+# Compare multiple models in one run
+uv run vlmocr benchmark --out-dir converted --model google/gemini-3.1-flash-lite-preview --model openai/gpt-4.1-mini
+
+# Low-cost API smoke test (one benchmark case = one page)
+uv run vlmocr benchmark --out-dir converted --case-limit 1
 ```
+
+## Deterministic benchmark workflow
+
+`benchmark-init-academic` creates a local benchmark bundle under `converted/benchmark/academic-textbook-v1`:
+
+- `manifest.json` with 10 fixed difficult cases (math/table/footnote/image-heavy)
+- `gold/*.json` one-page expected outputs for deterministic scoring
+
+`benchmark` then:
+
+- renders exactly one page per benchmark case
+- calls the selected model(s) on those pages
+- scores candidate raw markdown against gold using deterministic text/math/structure metrics
+- writes run reports to `converted/benchmark/reports`
+- stores every run, model summary, and case result in `converted/benchmark/history.db`
+
+Because each case is one page, `--case-limit 1` is the recommended way to run cheap API validation checks.
 
 ## Supported OCR inputs
 

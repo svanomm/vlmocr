@@ -1,6 +1,7 @@
 """OCR and conversion package."""
 
 __all__ = [
+    "benchmark",
     "cli",
     "contract",
     "conversion",

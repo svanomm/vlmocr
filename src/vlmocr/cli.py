@@ -11,7 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Sequence
 
-from vlmocr import conversion, estimate_cost, ocr
+from vlmocr import benchmark, conversion, estimate_cost, ocr
 from vlmocr.contract import (
     DEFAULT_DOCS_DIR,
     DEFAULT_OUT_DIR,
@@ -281,6 +281,100 @@ def build_parser() -> argparse.ArgumentParser:
     )
     estimate_parser.set_defaults(recursive=True)
 
+    benchmark_init_parser = subparsers.add_parser(
+        "benchmark-init-academic",
+        help="Create a local 10-page academic benchmark manifest and one-page gold files.",
+    )
+    benchmark_init_parser.add_argument("--docs-dir", type=Path, default=DEFAULT_DOCS_DIR)
+    benchmark_init_parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
+    benchmark_init_parser.add_argument(
+        "--raw-dir",
+        type=Path,
+        default=None,
+        help="Directory containing seeded raw OCR JSON. Defaults to <out-dir>/json/raw.",
+    )
+    benchmark_init_parser.add_argument(
+        "--manifest",
+        type=Path,
+        default=None,
+        help="Manifest output path. Defaults to <out-dir>/benchmark/academic-textbook-v1/manifest.json.",
+    )
+    benchmark_init_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing benchmark manifest and gold pages.",
+    )
+
+    benchmark_parser = subparsers.add_parser(
+        "benchmark",
+        help="Run deterministic one-page benchmark cases for one or more models.",
+    )
+    benchmark_parser.add_argument(
+        "--manifest",
+        type=Path,
+        default=None,
+        help="Benchmark manifest path. Defaults to <out-dir>/benchmark/academic-textbook-v1/manifest.json.",
+    )
+    benchmark_parser.add_argument("--docs-dir", type=Path, default=DEFAULT_DOCS_DIR)
+    benchmark_parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
+    benchmark_parser.add_argument("--api-key", default=None)
+    benchmark_parser.add_argument(
+        "--model",
+        action="append",
+        default=None,
+        help="Model identifier. Repeat --model to compare multiple models.",
+    )
+    benchmark_parser.add_argument(
+        "--prompt-template",
+        default=ocr.DEFAULT_OCR_PROMPT_TEMPLATE,
+        help="OCR prompt template name for benchmark calls.",
+    )
+    benchmark_parser.add_argument("--dpi", type=int, default=ocr.DEFAULT_OCR_DPI)
+    benchmark_parser.add_argument(
+        "--format",
+        choices=["png", "jpeg"],
+        default=ocr.DEFAULT_OCR_IMAGE_FORMAT,
+    )
+    benchmark_parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=ocr.DEFAULT_OCR_MAX_RETRIES,
+    )
+    benchmark_parser.add_argument(
+        "--temperature",
+        type=float,
+        default=ocr.DEFAULT_VLM_TEMPERATURE,
+    )
+    benchmark_parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=ocr.DEFAULT_OCR_MAX_TOKENS,
+    )
+    benchmark_parser.add_argument(
+        "--case-limit",
+        type=int,
+        default=None,
+        help="Run only the first N cases from the manifest (useful for low-cost checks).",
+    )
+    benchmark_parser.add_argument(
+        "--case-id",
+        action="append",
+        default=None,
+        help="Case id to run. Repeat --case-id to run an explicit subset.",
+    )
+    benchmark_parser.add_argument(
+        "--database",
+        type=Path,
+        default=None,
+        help="SQLite path for benchmark history. Defaults to <out-dir>/benchmark/history.db.",
+    )
+    benchmark_parser.add_argument(
+        "--reports-dir",
+        type=Path,
+        default=None,
+        help="Directory for benchmark report JSON output.",
+    )
+
     return parser
 
 
@@ -383,6 +477,53 @@ def _pause(input_fn: InputFunc) -> None:
 
 
 def _friendly_error_message(args: argparse.Namespace, exc: Exception) -> str:
+    if args.command == "benchmark-init-academic":
+        return "\n".join(
+            [
+                str(exc),
+                "",
+                (
+                    "Run `vlmocr ocr --docs-dir "
+                    f"{args.docs_dir} --out-dir {args.out_dir}` first so raw OCR JSON exists "
+                    "for benchmark seeding."
+                ),
+                (
+                    "Then rerun `vlmocr benchmark-init-academic` to generate the local "
+                    "10-page benchmark manifest and gold files."
+                ),
+                "",
+            ]
+        )
+
+    if args.command == "benchmark":
+        details = [str(exc), ""]
+        if "OPENROUTER_API_KEY" in str(exc):
+            details.extend(
+                [
+                    "Get an API key from https://openrouter.ai/keys.",
+                    "Then either:",
+                    "  - create a `.env` file in your project root with `OPENROUTER_API_KEY=your_key_here`",
+                    "  - set the OPENROUTER_API_KEY environment variable",
+                    "  - or rerun the command with `--api-key <your_key>`",
+                    "",
+                ]
+            )
+
+        details.extend(
+            [
+                (
+                    "If this is your first benchmark run, initialize local benchmark data with "
+                    f"`vlmocr benchmark-init-academic --docs-dir {args.docs_dir} --out-dir {args.out_dir}`."
+                ),
+                (
+                    "For a low-cost API smoke test, run one case only: "
+                    "`vlmocr benchmark --case-limit 1`"
+                ),
+                "",
+            ]
+        )
+        return "\n".join(details)
+
     if args.command == "convert":
         input_dir = args.input_dir or get_raw_ocr_dir(args.out_dir)
         return "\n".join(
@@ -438,6 +579,16 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> N
             run_init_command(docs_dir=args.docs_dir, out_dir=args.out_dir)
             return
 
+        if args.command == "benchmark-init-academic":
+            benchmark.initialize_academic_benchmark(
+                docs_dir=args.docs_dir,
+                out_dir=args.out_dir,
+                raw_dir=args.raw_dir,
+                manifest_path=args.manifest,
+                overwrite=args.overwrite,
+            )
+            return
+
         if args.command == "ocr":
             selected_template, prompt_text = _resolve_ocr_prompt_for_command(
                 args.prompt_template
@@ -468,6 +619,29 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> N
 
         if args.command == "estimate-cost":
             estimate_cost.count_pages(args.docs_dir, recursive=args.recursive)
+            return
+
+        if args.command == "benchmark":
+            selected_models = args.model or [ocr.DEFAULT_OCR_MODEL]
+            benchmark.run_benchmark(
+                manifest_path=args.manifest or benchmark.get_default_manifest_path(
+                    out_dir=args.out_dir
+                ),
+                docs_dir=args.docs_dir,
+                out_dir=args.out_dir,
+                database_path=args.database,
+                reports_dir=args.reports_dir,
+                api_key=args.api_key,
+                models=selected_models,
+                prompt_template=args.prompt_template,
+                dpi=args.dpi,
+                fmt=args.format,
+                temperature=args.temperature,
+                max_tokens=args.max_tokens,
+                max_retries=args.max_retries,
+                case_limit=args.case_limit,
+                case_ids=args.case_id,
+            )
             return
     except (FileNotFoundError, ValueError) as exc:
         parser.exit(status=2, message=_friendly_error_message(args, exc))
