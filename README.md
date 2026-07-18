@@ -147,6 +147,9 @@ uv run vlmocr benchmark --out-dir converted --model google/gemini-3.1-flash-lite
 
 # Compare multiple models in one run
 uv run vlmocr benchmark --out-dir converted --model google/gemini-3.1-flash-lite-preview --model openai/gpt-4.1-mini
+
+# Rescore saved benchmark reports offline after scoring logic changes
+uv run vlmocr benchmark-rescore-reports --out-dir converted
 ```
 
 ## Deterministic benchmark workflow
@@ -165,6 +168,7 @@ uv run vlmocr benchmark --out-dir converted --model google/gemini-3.1-flash-lite
 - scores candidate raw markdown against gold using deterministic content metrics, separate contract markup metrics, and per-case formatting-bias audit flags
 - writes run reports to `converted/benchmark/reports`
 - stores every run, model summary, and case result in `converted/benchmark/history.db`
+- can rescore saved benchmark reports offline from the stored gold/candidate JSON files
 - prints the 10 most recent benchmark model summaries after each benchmark run
 - verifies `docs/benchmark` integrity before running if that folder exists
 - records OpenRouter-reported usage and cost per case (`usage.cost`) when available

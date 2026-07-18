@@ -1072,3 +1072,46 @@ def test_main_dispatches_benchmark_command_with_explicit_options(
     assert captured["case_ids"] == ["case-a", "case-b"]
     assert captured["database_path"] == Path("bench/history.db")
     assert captured["reports_dir"] == Path("bench/reports")
+
+
+def test_main_dispatches_benchmark_rescore_reports_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    print_recent_called = {"value": False}
+
+    monkeypatch.setattr(
+        cli.benchmark,
+        "rescore_benchmark_reports",
+        lambda **kwargs: captured.update(kwargs)
+        or {"reports_rescored": 2, "models_rescored": 2, "cases_rescored": 16},
+    )
+    monkeypatch.setattr(
+        cli,
+        "_print_recent_benchmark_results",
+        lambda **kwargs: print_recent_called.__setitem__("value", True),
+    )
+
+    cli.main(
+        [
+            "benchmark-rescore-reports",
+            "--out-dir",
+            "converted",
+            "--reports-dir",
+            "bench/reports",
+            "--database",
+            "bench/history.db",
+            "--report",
+            "bench/reports/run-1.json",
+            "--report",
+            "bench/reports/run-2.json",
+        ]
+    )
+
+    assert captured["reports_dir"] == Path("bench/reports")
+    assert captured["database_path"] == Path("bench/history.db")
+    assert captured["report_paths"] == [
+        Path("bench/reports/run-1.json"),
+        Path("bench/reports/run-2.json"),
+    ]
+    assert print_recent_called["value"] is True

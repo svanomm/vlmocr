@@ -503,6 +503,145 @@ def test_get_recent_benchmark_results_returns_latest_rows(
     assert rows[1]["model"] == "model-a"
 
 
+def test_rescore_benchmark_reports_updates_report_and_history(
+    tmp_path: Path,
+) -> None:
+    report_dir = tmp_path / "converted" / "benchmark" / "reports"
+    report_dir.mkdir(parents=True)
+    candidate_dir = tmp_path / "converted" / "benchmark" / "candidates" / "run-000001" / "model-a"
+    candidate_dir.mkdir(parents=True)
+    bench_root = tmp_path / "bench"
+    gold_dir = bench_root / "gold"
+    gold_dir.mkdir(parents=True)
+
+    gold_markdown = "# Sample\n\n$E=mc^2$"
+    gold_path = gold_dir / "case1.json"
+    gold_path.write_text(
+        json.dumps(build_raw_ocr_document([gold_markdown], settings_hash="gold")),
+        encoding="utf-8",
+    )
+
+    candidate_path = candidate_dir / "case1.json"
+    candidate_path.write_text(
+        json.dumps(build_raw_ocr_document([gold_markdown], settings_hash="candidate")),
+        encoding="utf-8",
+    )
+
+    report_path = report_dir / "run-000001.json"
+    relative_candidate_path = Path("converted") / "benchmark" / "candidates" / "run-000001" / "model-a" / "case1.json"
+    stale_case_result = {
+        "case_id": "case1",
+        "document": "benchmark/case1.pdf",
+        "page": 1,
+        "text_score": 0.0,
+        "math_score": 0.0,
+        "structure_score": 0.0,
+        "overall_score": 0.0,
+        "prompt_tokens": 10,
+        "completion_tokens": 5,
+        "total_tokens": 15,
+        "cost_usd": 0.001,
+        "dollars_per_1000_pages": 1.0,
+        "candidate_json_path": str(relative_candidate_path),
+        "gold_json_path": str(gold_path),
+        "error": None,
+    }
+    stale_summary = {
+        "cases_total": 1,
+        "cases_scored": 1,
+        "cases_failed": 0,
+        "pages_billed": 1,
+        "prompt_tokens": 10,
+        "completion_tokens": 5,
+        "total_tokens": 15,
+        "total_cost_usd": 0.001,
+        "dollars_per_1000_pages": 1.0,
+        "text_score": 0.0,
+        "math_score": 0.0,
+        "structure_score": 0.0,
+        "overall_score": 0.0,
+    }
+    report_payload = {
+        "run_id": 1,
+        "created_at": "2026-07-18T00:00:00+00:00",
+        "manifest": {
+            "path": str(bench_root / "manifest.json"),
+            "name": "test-benchmark",
+            "version": "1.0",
+            "case_count": 1,
+        },
+        "models": [
+            {
+                "model": "model-a",
+                "summary": stale_summary,
+                "cases": [stale_case_result],
+            }
+        ],
+        "ranking": [
+            {
+                "model": "model-a",
+                "overall_score": 0.0,
+                "cases_failed": 0,
+                "total_cost_usd": 0.001,
+                "dollars_per_1000_pages": 1.0,
+            }
+        ],
+    }
+    report_path.write_text(json.dumps(report_payload), encoding="utf-8")
+
+    db_path = tmp_path / "converted" / "benchmark" / "history.db"
+    history = benchmark.BenchmarkHistoryDatabase(db_path)
+    run_id = history.start_run(
+        manifest_path=bench_root / "manifest.json",
+        manifest_name="test-benchmark",
+        manifest_version="1.0",
+        models=["model-a"],
+        args_payload={},
+    )
+    assert run_id == 1
+    history.record_case_result(run_id=run_id, model="model-a", result=stale_case_result)
+    history.record_model_summary(run_id=run_id, model="model-a", summary=stale_summary)
+    history.finish_run(run_id=run_id, status="completed", report_path=report_path, error=None)
+    history.close()
+
+    summary = benchmark.rescore_benchmark_reports(
+        reports_dir=report_dir,
+        database_path=db_path,
+        output_fn=lambda message: None,
+    )
+
+    assert summary["reports_rescored"] == 1
+    assert summary["models_rescored"] == 1
+    assert summary["cases_rescored"] == 1
+    assert summary["database_updated"] is True
+
+    rescored_report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert rescored_report["scoring"]["overall_score"] == "content_score"
+    rescored_case = rescored_report["models"][0]["cases"][0]
+    assert rescored_case["overall_score"] == pytest.approx(1.0)
+    assert rescored_case["content_score"] == pytest.approx(1.0)
+    assert rescored_case["score_audit"]["suspected_formatting_bias"] is False
+
+    with sqlite3.connect(db_path) as connection:
+        case_row = connection.execute(
+            "SELECT overall_score, content_score, contract_score FROM benchmark_case_results WHERE run_id = ? AND model = ?",
+            (run_id, "model-a"),
+        ).fetchone()
+        summary_row = connection.execute(
+            "SELECT overall_score, content_score, contract_score FROM benchmark_model_summaries WHERE run_id = ? AND model = ?",
+            (run_id, "model-a"),
+        ).fetchone()
+
+    assert case_row is not None
+    assert summary_row is not None
+    assert float(case_row[0]) == pytest.approx(1.0)
+    assert float(case_row[1]) == pytest.approx(1.0)
+    assert float(case_row[2]) == pytest.approx(1.0)
+    assert float(summary_row[0]) == pytest.approx(1.0)
+    assert float(summary_row[1]) == pytest.approx(1.0)
+    assert float(summary_row[2]) == pytest.approx(1.0)
+
+
 def test_run_benchmark_writes_report_and_history(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

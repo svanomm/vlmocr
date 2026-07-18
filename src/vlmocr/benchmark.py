@@ -1041,6 +1041,145 @@ def score_markdown_pair(gold_markdown: str, candidate_markdown: str) -> CaseScor
     )
 
 
+def _score_audit_payload(audit: ScoreAudit) -> dict[str, Any]:
+    return {
+        "strict_text_score": audit.strict_text_score,
+        "text_formatting_gain": audit.text_formatting_gain,
+        "ignored_gold_non_math_segments": audit.ignored_gold_non_math_segments,
+        "ignored_candidate_non_math_segments": audit.ignored_candidate_non_math_segments,
+        "contract_penalty": audit.contract_penalty,
+        "suspected_formatting_bias": audit.suspected_formatting_bias,
+        "flags": list(audit.flags),
+    }
+
+
+def _score_fields_from_case_score(score: CaseScore) -> dict[str, Any]:
+    return {
+        "text_score": score.text_score,
+        "math_score": score.math_score,
+        "structure_score": score.structure_score,
+        "content_score": score.content_score,
+        "contract_score": score.contract_score,
+        "legacy_overall_score": score.legacy_overall_score,
+        "overall_score": score.overall_score,
+        "score_audit": _score_audit_payload(score.audit),
+    }
+
+
+def _empty_score_fields() -> dict[str, Any]:
+    return {
+        "text_score": 0.0,
+        "math_score": 0.0,
+        "structure_score": 0.0,
+        "content_score": 0.0,
+        "contract_score": 0.0,
+        "legacy_overall_score": 0.0,
+        "overall_score": 0.0,
+        "score_audit": {
+            "strict_text_score": 0.0,
+            "text_formatting_gain": 0.0,
+            "ignored_gold_non_math_segments": 0,
+            "ignored_candidate_non_math_segments": 0,
+            "contract_penalty": 0.0,
+            "suspected_formatting_bias": False,
+            "flags": [],
+        },
+    }
+
+
+def _build_ranking(model_reports: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        (
+            {
+                "model": report["model"],
+                "overall_score": report["summary"]["overall_score"],
+                "cases_failed": report["summary"]["cases_failed"],
+                "total_cost_usd": report["summary"]["total_cost_usd"],
+                "dollars_per_1000_pages": report["summary"][
+                    "dollars_per_1000_pages"
+                ],
+            }
+            for report in model_reports
+        ),
+        key=lambda row: row["overall_score"],
+        reverse=True,
+    )
+
+
+def _build_scoring_metadata() -> dict[str, Any]:
+    return {
+        "version": 2,
+        "overall_score": "content_score",
+        "content_weights": {
+            "text": CONTENT_TEXT_WEIGHT,
+            "math": CONTENT_MATH_WEIGHT,
+        },
+        "legacy_overall_weights": {
+            "text": OVERALL_TEXT_WEIGHT,
+            "math": OVERALL_MATH_WEIGHT,
+            "contract": OVERALL_STRUCTURE_WEIGHT,
+        },
+        "notes": [
+            "overall_score excludes contract markup differences",
+            "contract_score reports gold-format fidelity separately",
+            "score_audit flags likely formatting-driven disagreements",
+        ],
+    }
+
+
+def _resolve_saved_artifact_path(path_value: str | None, *, report_path: Path) -> Path | None:
+    if path_value is None:
+        return None
+
+    candidate_path = Path(path_value)
+    if candidate_path.is_absolute():
+        return candidate_path.resolve()
+
+    search_roots = [Path.cwd(), *list(report_path.parents[:4])]
+    for root in search_roots:
+        resolved = (root / candidate_path).resolve()
+        if resolved.exists():
+            return resolved
+
+    return (Path.cwd() / candidate_path).resolve()
+
+
+def _rescore_case_result(*, report_path: Path, result: dict[str, Any]) -> dict[str, Any]:
+    rescored = dict(result)
+    if rescored.get("error") is not None:
+        rescored.update(_empty_score_fields())
+        return rescored
+
+    gold_path = _resolve_saved_artifact_path(
+        rescored.get("gold_json_path"),
+        report_path=report_path,
+    )
+    candidate_path = _resolve_saved_artifact_path(
+        rescored.get("candidate_json_path"),
+        report_path=report_path,
+    )
+
+    if gold_path is None or not gold_path.exists():
+        raise FileNotFoundError(
+            f"Benchmark gold JSON not found while rescoring report '{report_path.name}': {gold_path}"
+        )
+    if candidate_path is None or not candidate_path.exists():
+        raise FileNotFoundError(
+            f"Benchmark candidate JSON not found while rescoring report '{report_path.name}': {candidate_path}"
+        )
+
+    gold_payload = _load_raw_ocr_payload(gold_path)
+    candidate_payload = _load_raw_ocr_payload(candidate_path)
+    score = score_markdown_pair(
+        gold_payload["pages"][0]["markdown"],
+        candidate_payload["pages"][0]["markdown"],
+    )
+    rescored.update(_score_fields_from_case_score(score))
+    rescored["gold_json_path"] = str(gold_path)
+    rescored["candidate_json_path"] = str(candidate_path)
+    return rescored
+
+
 def _load_raw_ocr_payload(path: Path) -> dict[str, Any]:
     return validate_raw_ocr_document(_read_json(path))
 
@@ -1244,6 +1383,9 @@ class BenchmarkHistoryDatabase:
                 text_score REAL,
                 math_score REAL,
                 structure_score REAL,
+                content_score REAL,
+                contract_score REAL,
+                legacy_overall_score REAL,
                 overall_score REAL,
                 prompt_tokens INTEGER,
                 completion_tokens INTEGER,
@@ -1252,6 +1394,7 @@ class BenchmarkHistoryDatabase:
                 dollars_per_1000_pages REAL,
                 candidate_json_path TEXT,
                 gold_json_path TEXT,
+                score_audit_json TEXT,
                 error TEXT,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (run_id) REFERENCES benchmark_runs(id)
@@ -1270,6 +1413,9 @@ class BenchmarkHistoryDatabase:
                 text_score REAL NOT NULL,
                 math_score REAL NOT NULL,
                 structure_score REAL NOT NULL,
+                content_score REAL,
+                contract_score REAL,
+                legacy_overall_score REAL,
                 overall_score REAL NOT NULL,
                 pages_billed INTEGER NOT NULL,
                 prompt_tokens INTEGER NOT NULL,
@@ -1277,6 +1423,9 @@ class BenchmarkHistoryDatabase:
                 total_tokens INTEGER NOT NULL,
                 total_cost_usd REAL NOT NULL,
                 dollars_per_1000_pages REAL NOT NULL,
+                formatting_bias_cases INTEGER,
+                average_text_formatting_gain REAL,
+                average_contract_penalty REAL,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (run_id) REFERENCES benchmark_runs(id)
             );
@@ -1292,6 +1441,12 @@ class BenchmarkHistoryDatabase:
         self._ensure_column(
             "benchmark_case_results", "dollars_per_1000_pages REAL"
         )
+        self._ensure_column("benchmark_case_results", "content_score REAL")
+        self._ensure_column("benchmark_case_results", "contract_score REAL")
+        self._ensure_column(
+            "benchmark_case_results", "legacy_overall_score REAL"
+        )
+        self._ensure_column("benchmark_case_results", "score_audit_json TEXT")
 
         self._ensure_column("benchmark_model_summaries", "pages_billed INTEGER")
         self._ensure_column("benchmark_model_summaries", "prompt_tokens INTEGER")
@@ -1302,6 +1457,20 @@ class BenchmarkHistoryDatabase:
         self._ensure_column("benchmark_model_summaries", "total_cost_usd REAL")
         self._ensure_column(
             "benchmark_model_summaries", "dollars_per_1000_pages REAL"
+        )
+        self._ensure_column("benchmark_model_summaries", "content_score REAL")
+        self._ensure_column("benchmark_model_summaries", "contract_score REAL")
+        self._ensure_column(
+            "benchmark_model_summaries", "legacy_overall_score REAL"
+        )
+        self._ensure_column(
+            "benchmark_model_summaries", "formatting_bias_cases INTEGER"
+        )
+        self._ensure_column(
+            "benchmark_model_summaries", "average_text_formatting_gain REAL"
+        )
+        self._ensure_column(
+            "benchmark_model_summaries", "average_contract_penalty REAL"
         )
         self.connection.commit()
 
@@ -1350,6 +1519,10 @@ class BenchmarkHistoryDatabase:
         return int(cursor.lastrowid)
 
     def record_case_result(self, *, run_id: int, model: str, result: dict[str, Any]) -> None:
+        self._insert_case_result(run_id=run_id, model=model, result=result)
+        self.connection.commit()
+
+    def _insert_case_result(self, *, run_id: int, model: str, result: dict[str, Any]) -> None:
         self.connection.execute(
             """
             INSERT INTO benchmark_case_results (
@@ -1361,6 +1534,9 @@ class BenchmarkHistoryDatabase:
                 text_score,
                 math_score,
                 structure_score,
+                content_score,
+                contract_score,
+                legacy_overall_score,
                 overall_score,
                 prompt_tokens,
                 completion_tokens,
@@ -1369,9 +1545,10 @@ class BenchmarkHistoryDatabase:
                 dollars_per_1000_pages,
                 candidate_json_path,
                 gold_json_path,
+                score_audit_json,
                 error,
                 created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -1382,6 +1559,9 @@ class BenchmarkHistoryDatabase:
                 result["text_score"],
                 result["math_score"],
                 result["structure_score"],
+                result.get("content_score"),
+                result.get("contract_score"),
+                result.get("legacy_overall_score"),
                 result["overall_score"],
                 result["prompt_tokens"],
                 result["completion_tokens"],
@@ -1390,13 +1570,23 @@ class BenchmarkHistoryDatabase:
                 result["dollars_per_1000_pages"],
                 result["candidate_json_path"],
                 result["gold_json_path"],
+                json.dumps(result.get("score_audit", {}), ensure_ascii=False),
                 result["error"],
                 _utc_now_iso(),
             ),
         )
-        self.connection.commit()
 
     def record_model_summary(
+        self,
+        *,
+        run_id: int,
+        model: str,
+        summary: dict[str, Any],
+    ) -> None:
+        self._insert_model_summary(run_id=run_id, model=model, summary=summary)
+        self.connection.commit()
+
+    def _insert_model_summary(
         self,
         *,
         run_id: int,
@@ -1414,6 +1604,9 @@ class BenchmarkHistoryDatabase:
                 text_score,
                 math_score,
                 structure_score,
+                content_score,
+                contract_score,
+                legacy_overall_score,
                 overall_score,
                 pages_billed,
                 prompt_tokens,
@@ -1421,8 +1614,11 @@ class BenchmarkHistoryDatabase:
                 total_tokens,
                 total_cost_usd,
                 dollars_per_1000_pages,
+                formatting_bias_cases,
+                average_text_formatting_gain,
+                average_contract_penalty,
                 created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -1433,6 +1629,9 @@ class BenchmarkHistoryDatabase:
                 summary["text_score"],
                 summary["math_score"],
                 summary["structure_score"],
+                summary.get("content_score"),
+                summary.get("contract_score"),
+                summary.get("legacy_overall_score"),
                 summary["overall_score"],
                 summary["pages_billed"],
                 summary["prompt_tokens"],
@@ -1440,9 +1639,32 @@ class BenchmarkHistoryDatabase:
                 summary["total_tokens"],
                 summary["total_cost_usd"],
                 summary["dollars_per_1000_pages"],
+                summary.get("formatting_bias_cases"),
+                summary.get("average_text_formatting_gain"),
+                summary.get("average_contract_penalty"),
                 _utc_now_iso(),
             ),
         )
+
+    def replace_model_results(
+        self,
+        *,
+        run_id: int,
+        model: str,
+        case_results: list[dict[str, Any]],
+        summary: dict[str, Any],
+    ) -> None:
+        self.connection.execute(
+            "DELETE FROM benchmark_case_results WHERE run_id = ? AND model = ?",
+            (run_id, model),
+        )
+        self.connection.execute(
+            "DELETE FROM benchmark_model_summaries WHERE run_id = ? AND model = ?",
+            (run_id, model),
+        )
+        for result in case_results:
+            self._insert_case_result(run_id=run_id, model=model, result=result)
+        self._insert_model_summary(run_id=run_id, model=model, summary=summary)
         self.connection.commit()
 
     def finish_run(
@@ -1517,6 +1739,98 @@ def get_recent_benchmark_results(
         return []
 
     return [dict(row) for row in rows]
+
+
+def rescore_benchmark_reports(
+    *,
+    reports_dir: Path,
+    database_path: Path | None = None,
+    report_paths: list[Path] | None = None,
+    output_fn: OutputFunc = print,
+) -> dict[str, Any]:
+    """Recompute scores for saved benchmark reports without rerunning OCR."""
+    resolved_reports_dir = Path(reports_dir)
+    reports = [Path(path) for path in (report_paths or [])]
+    if not reports:
+        reports = sorted(resolved_reports_dir.glob("*.json"))
+
+    if not reports:
+        raise FileNotFoundError(f"No benchmark reports found in {resolved_reports_dir}")
+
+    resolved_database = Path(database_path) if database_path is not None else None
+    db = BenchmarkHistoryDatabase(resolved_database) if resolved_database is not None else None
+
+    reports_rescored = 0
+    models_rescored = 0
+    cases_rescored = 0
+
+    try:
+        for report_path in reports:
+            resolved_report = Path(report_path)
+            report_payload = _read_json(resolved_report)
+            models_payload = report_payload.get("models")
+            if not isinstance(models_payload, list) or not models_payload:
+                raise ValueError(
+                    f"Benchmark report is missing model results: {resolved_report}"
+                )
+
+            updated_models: list[dict[str, Any]] = []
+            for model_payload in models_payload:
+                model_name = str(model_payload.get("model", "")).strip()
+                if not model_name:
+                    raise ValueError(
+                        f"Benchmark report contains a model entry without a model name: {resolved_report}"
+                    )
+
+                existing_cases = model_payload.get("cases")
+                if not isinstance(existing_cases, list):
+                    raise ValueError(
+                        f"Benchmark report model '{model_name}' is missing case results: {resolved_report}"
+                    )
+
+                rescored_case_results = [
+                    _rescore_case_result(report_path=resolved_report, result=result)
+                    for result in existing_cases
+                ]
+                summary = _summarize_model_cases(rescored_case_results)
+                updated_models.append(
+                    {
+                        "model": model_name,
+                        "summary": summary,
+                        "cases": rescored_case_results,
+                    }
+                )
+
+                if db is not None and isinstance(report_payload.get("run_id"), int):
+                    db.replace_model_results(
+                        run_id=int(report_payload["run_id"]),
+                        model=model_name,
+                        case_results=rescored_case_results,
+                        summary=summary,
+                    )
+
+                models_rescored += 1
+                cases_rescored += len(rescored_case_results)
+
+            report_payload["models"] = updated_models
+            report_payload["ranking"] = _build_ranking(updated_models)
+            report_payload["scoring"] = _build_scoring_metadata()
+            report_payload["rescored_at"] = _utc_now_iso()
+            _write_json(resolved_report, report_payload)
+
+            reports_rescored += 1
+            output_fn(f"Rescored benchmark report: {resolved_report}")
+
+        return {
+            "reports_rescored": reports_rescored,
+            "models_rescored": models_rescored,
+            "cases_rescored": cases_rescored,
+            "database_updated": resolved_database is not None,
+            "reports": [str(Path(path)) for path in reports],
+        }
+    finally:
+        if db is not None:
+            db.close()
 
 
 def run_benchmark(
@@ -1681,28 +1995,6 @@ def run_benchmark(
                         "case_id": case.case_id,
                         "document": case.document,
                         "page": case.page,
-                        "text_score": score.text_score,
-                        "math_score": score.math_score,
-                        "structure_score": score.structure_score,
-                        "content_score": score.content_score,
-                        "contract_score": score.contract_score,
-                        "legacy_overall_score": score.legacy_overall_score,
-                        "overall_score": score.overall_score,
-                        "score_audit": {
-                            "strict_text_score": score.audit.strict_text_score,
-                            "text_formatting_gain": score.audit.text_formatting_gain,
-                            "ignored_gold_non_math_segments": (
-                                score.audit.ignored_gold_non_math_segments
-                            ),
-                            "ignored_candidate_non_math_segments": (
-                                score.audit.ignored_candidate_non_math_segments
-                            ),
-                            "contract_penalty": score.audit.contract_penalty,
-                            "suspected_formatting_bias": (
-                                score.audit.suspected_formatting_bias
-                            ),
-                            "flags": list(score.audit.flags),
-                        },
                         "prompt_tokens": usage.prompt_tokens,
                         "completion_tokens": usage.completion_tokens,
                         "total_tokens": usage.total_tokens,
@@ -1719,27 +2011,12 @@ def run_benchmark(
                         "gold_json_path": str(gold_path),
                         "error": None,
                     }
+                    result.update(_score_fields_from_case_score(score))
                 except Exception as exc:
                     result = {
                         "case_id": case.case_id,
                         "document": case.document,
                         "page": case.page,
-                        "text_score": 0.0,
-                        "math_score": 0.0,
-                        "structure_score": 0.0,
-                        "content_score": 0.0,
-                        "contract_score": 0.0,
-                        "legacy_overall_score": 0.0,
-                        "overall_score": 0.0,
-                        "score_audit": {
-                            "strict_text_score": 0.0,
-                            "text_formatting_gain": 0.0,
-                            "ignored_gold_non_math_segments": 0,
-                            "ignored_candidate_non_math_segments": 0,
-                            "contract_penalty": 0.0,
-                            "suspected_formatting_bias": False,
-                            "flags": [],
-                        },
                         "prompt_tokens": 0,
                         "completion_tokens": 0,
                         "total_tokens": 0,
@@ -1749,6 +2026,7 @@ def run_benchmark(
                         "gold_json_path": str(gold_path),
                         "error": str(exc),
                     }
+                    result.update(_empty_score_fields())
 
                 db.record_case_result(run_id=run_id, model=model, result=result)
                 case_results.append(result)
@@ -1786,44 +2064,12 @@ def run_benchmark(
                 }
             )
 
-        ranking = sorted(
-            (
-                {
-                    "model": report["model"],
-                    "overall_score": report["summary"]["overall_score"],
-                    "cases_failed": report["summary"]["cases_failed"],
-                    "total_cost_usd": report["summary"]["total_cost_usd"],
-                    "dollars_per_1000_pages": report["summary"][
-                        "dollars_per_1000_pages"
-                    ],
-                }
-                for report in model_reports
-            ),
-            key=lambda row: row["overall_score"],
-            reverse=True,
-        )
+        ranking = _build_ranking(model_reports)
 
         report_payload = {
             "run_id": run_id,
             "created_at": _utc_now_iso(),
-            "scoring": {
-                "version": 2,
-                "overall_score": "content_score",
-                "content_weights": {
-                    "text": CONTENT_TEXT_WEIGHT,
-                    "math": CONTENT_MATH_WEIGHT,
-                },
-                "legacy_overall_weights": {
-                    "text": OVERALL_TEXT_WEIGHT,
-                    "math": OVERALL_MATH_WEIGHT,
-                    "contract": OVERALL_STRUCTURE_WEIGHT,
-                },
-                "notes": [
-                    "overall_score excludes contract markup differences",
-                    "contract_score reports gold-format fidelity separately",
-                    "score_audit flags likely formatting-driven disagreements",
-                ],
-            },
+            "scoring": _build_scoring_metadata(),
             "manifest": {
                 "path": str(manifest_path),
                 "name": manifest.name,

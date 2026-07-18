@@ -435,6 +435,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory for benchmark report JSON output.",
     )
 
+    benchmark_rescore_parser = subparsers.add_parser(
+        "benchmark-rescore-reports",
+        help="Recompute scores for saved benchmark reports without rerunning OCR.",
+    )
+    benchmark_rescore_parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=DEFAULT_OUT_DIR,
+        help="Used to resolve the default reports directory and history database.",
+    )
+    benchmark_rescore_parser.add_argument(
+        "--reports-dir",
+        type=Path,
+        default=None,
+        help="Directory containing benchmark report JSON files.",
+    )
+    benchmark_rescore_parser.add_argument(
+        "--database",
+        type=Path,
+        default=None,
+        help="SQLite path for benchmark history. Defaults to <out-dir>/benchmark/history.db.",
+    )
+    benchmark_rescore_parser.add_argument(
+        "--report",
+        action="append",
+        type=Path,
+        default=None,
+        help="Specific report JSON to rescore. Repeat --report to rescore an explicit subset.",
+    )
+
     return parser
 
 
@@ -584,6 +614,19 @@ def _friendly_error_message(args: argparse.Namespace, exc: Exception) -> str:
         )
         return "\n".join(details)
 
+    if args.command == "benchmark-rescore-reports":
+        return "\n".join(
+            [
+                str(exc),
+                "",
+                (
+                    "Run `vlmocr benchmark` first, or point `--reports-dir` at an existing "
+                    "benchmark report folder."
+                ),
+                "",
+            ]
+        )
+
     if args.command == "convert":
         input_dir = args.input_dir or get_raw_ocr_dir(args.out_dir)
         return "\n".join(
@@ -714,6 +757,20 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> N
                 max_retries=args.max_retries,
                 case_limit=args.case_limit,
                 case_ids=args.case_id,
+            )
+            _print_recent_benchmark_results(
+                out_dir=args.out_dir,
+                database_path=args.database,
+            )
+            return
+
+        if args.command == "benchmark-rescore-reports":
+            benchmark.rescore_benchmark_reports(
+                reports_dir=args.reports_dir
+                or benchmark.get_default_reports_dir(out_dir=args.out_dir),
+                database_path=args.database
+                or benchmark.get_default_database_path(out_dir=args.out_dir),
+                report_paths=args.report,
             )
             _print_recent_benchmark_results(
                 out_dir=args.out_dir,
