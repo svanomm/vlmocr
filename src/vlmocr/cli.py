@@ -263,7 +263,7 @@ def build_parser() -> argparse.ArgumentParser:
     ocr_parser.add_argument("--dpi", type=int, default=ocr.DEFAULT_OCR_DPI)
     ocr_parser.add_argument(
         "--format",
-        choices=["png", "jpeg"],
+        choices=["png", "jpeg", "jpg"],
         default=ocr.DEFAULT_OCR_IMAGE_FORMAT,
     )
     ocr_parser.add_argument(
@@ -395,7 +395,7 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark_parser.add_argument("--dpi", type=int, default=ocr.DEFAULT_OCR_DPI)
     benchmark_parser.add_argument(
         "--format",
-        choices=["png", "jpeg"],
+        choices=["png", "jpeg", "jpg"],
         default=ocr.DEFAULT_OCR_IMAGE_FORMAT,
     )
     benchmark_parser.add_argument(

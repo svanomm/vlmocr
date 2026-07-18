@@ -316,10 +316,11 @@ def build_ocr_settings(
 ) -> dict[str, str | int | float]:
     """Build the canonical OCR settings payload used for hashing."""
     resolved_prompt = _resolve_prompt(prompt)
+    normalized_format = _validate_request_image_format(fmt)
     return {
         "model": model,
         "dpi": dpi,
-        "image_format": fmt,
+        "image_format": normalized_format,
         "prompt": resolved_prompt,
         "temperature": temperature,
         "max_tokens": max_tokens,
@@ -539,7 +540,9 @@ def create_client(api_key: str | None = None) -> OpenAI:
 
 
 def _validate_request_image_format(fmt: str) -> str:
-    normalized_format = fmt.lower()
+    normalized_format = fmt.strip().lower()
+    if normalized_format == "jpg":
+        return "jpeg"
     if normalized_format not in {"png", "jpeg"}:
         raise ValueError(f"Unsupported image format: {fmt}")
     return normalized_format
@@ -557,7 +560,7 @@ def render_page_to_image(
         doc: An open PyMuPDF document.
         page_index: Zero-based page index to render.
         dpi: Resolution in dots per inch.
-        fmt: Image format, either ``"png"`` or ``"jpeg"``.
+        fmt: Image format, either ``"png"`` or ``"jpeg"``; ``"jpg"`` is accepted as an alias.
 
     Returns:
         Base64-encoded image string.
@@ -696,7 +699,8 @@ def _ocr_page_with_usage(
 ) -> tuple[str, OCRPageUsage]:
     """Send a page image to a vision model and return markdown plus OpenRouter usage."""
     resolved_prompt = _resolve_prompt(prompt)
-    mime = "image/jpeg" if fmt == "jpeg" else "image/png"
+    normalized_format = _validate_request_image_format(fmt)
+    mime = "image/jpeg" if normalized_format == "jpeg" else "image/png"
     response = client.chat.completions.create(
         model=model,
         messages=[

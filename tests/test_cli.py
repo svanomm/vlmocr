@@ -109,6 +109,31 @@ def test_main_dispatches_ocr_command_with_no_recursive(
     assert captured["recursive"] is False
 
 
+def test_main_dispatches_ocr_command_with_jpg_format_alias(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The CLI should accept jpg as an alias for JPEG output."""
+    captured: dict[str, object] = {}
+
+    def fake_ocr_documents(**kwargs: object) -> list[Path]:
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(cli.ocr, "ocr_documents", fake_ocr_documents)
+
+    cli.main([
+        "ocr",
+        "--docs-dir",
+        "docs",
+        "--out-dir",
+        "out",
+        "--format",
+        "jpg",
+    ])
+
+    assert captured["fmt"] == "jpg"
+
+
 def test_main_dispatches_convert_command(monkeypatch: pytest.MonkeyPatch) -> None:
     """The CLI should dispatch conversion arguments to the conversion module."""
     captured: dict[str, object] = {}

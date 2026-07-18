@@ -73,6 +73,17 @@ def test_render_page_to_image_jpeg() -> None:
         os.unlink(path)
 
 
+def test_render_image_to_image_accepts_jpg_alias(tmp_path: Path) -> None:
+    """render_image_to_image should treat jpg as a JPEG output alias."""
+    image_path = tmp_path / "sample.jpg"
+    _create_test_image(image_path, fmt="JPEG")
+
+    b64 = ocr_module.render_image_to_image(image_path, fmt="jpg")
+
+    raw = base64.b64decode(b64)
+    assert raw[:2] == b"\xff\xd8"
+
+
 def test_convert_file_invalid_max_workers(tmp_path: Path) -> None:
     """convert_file should raise ValueError when max_workers < 1."""
     path = _create_test_pdf(1)
@@ -403,6 +414,13 @@ def test_hash_ocr_settings_changes_when_prompt_file_changes(
     second_hash = ocr_module.hash_ocr_settings(model="test-model", dpi=300, fmt="jpeg")
 
     assert first_hash != second_hash
+
+
+def test_hash_ocr_settings_normalizes_jpg_alias() -> None:
+    """Settings hashes should treat jpg and jpeg as the same image format."""
+    assert ocr_module.hash_ocr_settings(fmt="jpg") == ocr_module.hash_ocr_settings(
+        fmt="jpeg"
+    )
 
 
 def test_list_ocr_prompt_templates_reads_front_matter_descriptions(
