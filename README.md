@@ -148,6 +148,9 @@ uv run vlmocr benchmark --out-dir converted --model google/gemini-3.1-flash-lite
 # Compare multiple models in one run
 uv run vlmocr benchmark --out-dir converted --model google/gemini-3.1-flash-lite-preview --model openai/gpt-4.1-mini
 
+# Or pass multiple models in one flag with semicolons
+uv run vlmocr benchmark --out-dir converted --model "google/gemini-3.1-flash-lite-preview;openai/gpt-4.1-mini"
+
 # Rescore saved benchmark reports offline after scoring logic changes
 uv run vlmocr benchmark-rescore-reports --out-dir converted
 ```

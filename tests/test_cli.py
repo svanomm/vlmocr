@@ -816,7 +816,7 @@ def test_launch_tui_benchmark_requires_model_slug(
 
     assert prompts == [
         "Select an option [1-8]: ",
-        "Model slug (required, e.g. openai/gpt-4.1-mini): ",
+        "Model slug(s) (required, e.g. openai/gpt-4.1-mini;google/gemini-3.1-flash-lite-preview): ",
         "Proceed with benchmark now [y/N]: ",
         "Press Enter to return to the menu...",
         "Select an option [1-8]: ",
@@ -831,6 +831,59 @@ def test_launch_tui_benchmark_requires_model_slug(
     assert "openai/gpt-4.1-mini" in "\n".join(output_lines)
     assert "\n".join(output_lines).count("Most recent benchmark results") == 1
     assert "Progress [.] 1/1 pages completed (openai/gpt-4.1-mini: case1)" in "\n".join(output_lines)
+
+
+def test_launch_tui_benchmark_accepts_semicolon_delimited_models(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    docs_dir = tmp_path / "docs"
+    out_dir = tmp_path / "converted"
+    docs_dir.mkdir()
+    out_dir.mkdir()
+
+    output_lines: list[str] = []
+    responses = iter(
+        [
+            "7",
+            "openai/gpt-4.1-mini; google/gemini-3.1-flash-lite-preview",
+            "y",
+            "",
+            "8",
+        ]
+    )
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(cli, "DEFAULT_DOCS_DIR", docs_dir)
+    monkeypatch.setattr(cli, "DEFAULT_OUT_DIR", out_dir)
+    monkeypatch.setattr(
+        cli.benchmark,
+        "get_default_manifest_path",
+        lambda *, out_dir: out_dir / "benchmark" / "manifest.json",
+    )
+    monkeypatch.setattr(
+        cli.benchmark,
+        "get_recent_benchmark_results",
+        lambda *, database_path, limit=10: [],
+    )
+    monkeypatch.setattr(
+        cli.benchmark,
+        "run_benchmark",
+        lambda **kwargs: captured.update(kwargs) or {"run_id": 1},
+    )
+
+    cli.launch_tui(
+        input_fn=lambda prompt: next(responses),
+        output_fn=output_lines.append,
+    )
+
+    assert captured["models"] == [
+        "openai/gpt-4.1-mini",
+        "google/gemini-3.1-flash-lite-preview",
+    ]
+    assert (
+        "Benchmark will run all cases for models: openai/gpt-4.1-mini, google/gemini-3.1-flash-lite-preview"
+        in "\n".join(output_lines)
+    )
 
 
 def test_main_ocr_missing_api_key_shows_setup_instructions(
@@ -1072,6 +1125,30 @@ def test_main_dispatches_benchmark_command_with_explicit_options(
     assert captured["case_ids"] == ["case-a", "case-b"]
     assert captured["database_path"] == Path("bench/history.db")
     assert captured["reports_dir"] == Path("bench/reports")
+
+
+def test_main_dispatches_benchmark_command_with_semicolon_delimited_models(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        cli.benchmark,
+        "run_benchmark",
+        lambda **kwargs: captured.update(kwargs) or {"run_id": 2},
+    )
+
+    cli.main(
+        [
+            "benchmark",
+            "--out-dir",
+            "converted",
+            "--model",
+            "model-a; model-b ;model-c",
+        ]
+    )
+
+    assert captured["models"] == ["model-a", "model-b", "model-c"]
 
 
 def test_main_dispatches_benchmark_rescore_reports_command(

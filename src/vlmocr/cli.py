@@ -382,7 +382,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--model",
         action="append",
         default=None,
-        help="Required model slug. Repeat --model to compare multiple models.",
+        help=(
+            "Required model slug. Repeat --model to compare multiple models, "
+            "or pass a semicolon-delimited list to one --model value."
+        ),
     )
     benchmark_parser.add_argument(
         "--prompt-template",
@@ -566,6 +569,16 @@ def _pause(input_fn: InputFunc) -> None:
     input_fn("Press Enter to return to the menu...")
 
 
+def _parse_benchmark_models(values: Sequence[str] | None) -> list[str]:
+    models: list[str] = []
+    for value in values or []:
+        for item in value.split(";"):
+            model = item.strip()
+            if model:
+                models.append(model)
+    return models
+
+
 def _friendly_error_message(args: argparse.Namespace, exc: Exception) -> str:
     if args.command == "benchmark-init-academic":
         return "\n".join(
@@ -603,7 +616,8 @@ def _friendly_error_message(args: argparse.Namespace, exc: Exception) -> str:
             [
                 (
                     "Benchmark requires an explicit model slug. "
-                    "Example: `vlmocr benchmark --model openai/gpt-4.1-mini`"
+                    "Example: `vlmocr benchmark --model openai/gpt-4.1-mini` "
+                    "or `vlmocr benchmark --model openai/gpt-4.1-mini;google/gemini-3.1-flash-lite-preview`"
                 ),
                 (
                     "If this is your first benchmark run, initialize local benchmark data with "
@@ -733,7 +747,7 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> N
             return
 
         if args.command == "benchmark":
-            selected_models = args.model or []
+            selected_models = _parse_benchmark_models(args.model)
             if not selected_models:
                 raise ValueError(
                     "Benchmark requires at least one --model <model_slug> argument."
@@ -1153,19 +1167,27 @@ def _run_interactive_benchmark(
     output_fn(f"  docs: {docs_dir}")
     output_fn(f"  output: {out_dir}")
     output_fn(f"  manifest: {manifest_path}")
-    output_fn("  model: required (enter a model slug)")
+    output_fn("  model: required (enter one slug or a semicolon-delimited list)")
     _print_recent_benchmark_results(out_dir=out_dir, output_fn=output_fn)
 
-    model = _prompt_text(
+    model_input = _prompt_text(
         input_fn,
-        "Model slug (required, e.g. openai/gpt-4.1-mini)",
+        "Model slug(s) (required, e.g. openai/gpt-4.1-mini;google/gemini-3.1-flash-lite-preview)",
         default="",
     )
-    if not model:
-        output_fn("Benchmark requires a model slug. Example: openai/gpt-4.1-mini")
+    models = _parse_benchmark_models([model_input])
+    if not models:
+        output_fn(
+            "Benchmark requires at least one model slug. Example: openai/gpt-4.1-mini"
+        )
         return
 
-    output_fn(f"Benchmark will run all cases for model: {model}")
+    if len(models) == 1:
+        output_fn(f"Benchmark will run all cases for model: {models[0]}")
+    else:
+        output_fn(
+            "Benchmark will run all cases for models: " + ", ".join(models)
+        )
 
     if not _prompt_bool(input_fn, "Proceed with benchmark now", default=False):
         output_fn("Benchmark cancelled.")
@@ -1177,7 +1199,7 @@ def _run_interactive_benchmark(
             docs_dir=docs_dir,
             out_dir=out_dir,
             api_key=None,
-            models=[model],
+            models=models,
             output_fn=output_fn,
         )
     except (FileNotFoundError, ValueError) as exc:
