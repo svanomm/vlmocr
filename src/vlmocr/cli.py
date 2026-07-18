@@ -93,6 +93,45 @@ def _pad_visible_right(text: str, width: int) -> str:
     return f"{text}{' ' * (width - visible_width)}"
 
 
+def _pad_visible_left(text: str, width: int) -> str:
+    visible_width = _visible_len(text)
+    if visible_width >= width:
+        return text
+
+    return f"{' ' * (width - visible_width)}{text}"
+
+
+def _render_text_table(
+    headers: Sequence[str],
+    rows: Sequence[Sequence[str]],
+    *,
+    right_align: set[int] | None = None,
+) -> str:
+    widths = [_visible_len(header) for header in headers]
+    for row in rows:
+        for index, cell in enumerate(row):
+            widths[index] = max(widths[index], _visible_len(cell))
+
+    right_align = right_align or set()
+
+    def format_row(row: Sequence[str]) -> str:
+        cells = [
+            (
+                _pad_visible_left(cell, widths[index])
+                if index in right_align
+                else _pad_visible_right(cell, widths[index])
+            )
+            for index, cell in enumerate(row)
+        ]
+        return f"| {' | '.join(cells)} |"
+
+    separator = "+-" + "-+-".join("-" * width for width in widths) + "-+"
+    lines = [separator, format_row(headers), separator]
+    lines.extend(format_row(row) for row in rows)
+    lines.append(separator)
+    return "\n".join(lines)
+
+
 def _render_panel(
     title: str,
     lines: Sequence[str],
@@ -169,8 +208,8 @@ def _render_menu(*, ansi_enabled: bool) -> str:
         "[4] Validate current structure",
         "[5] Show quickstart",
         "[6] Show/edit default OCR prompt",
-        "[7] Quit",
-        "[8] Run benchmark (choose model slug)",
+        "[7] Run benchmark (choose model slug)",
+        "[8] Quit",
         "",
         "tip: press Ctrl+C at any prompt to leave the launcher.",
     ]
@@ -1003,19 +1042,45 @@ def _print_recent_benchmark_results(
         return
 
     output_fn("Most recent benchmark results (latest 10 model summaries):")
+    rows: list[tuple[str, ...]] = []
     for row in recent:
-        completed_at = row["completed_at"] or "-"
-        output_fn(
-            "  "
-            f"run={row['run_id']} "
-            f"status={row['status']} "
-            f"model={row['model']} "
-            f"overall={row['overall_score']:.3f} "
-            f"failed={row['cases_failed']}/{row['cases_total']} "
-            f"cost=${row['total_cost_usd']:.6f} "
-            f"$/1k_pages=${row['dollars_per_1000_pages']:.2f} "
-            f"completed={completed_at}"
+        completed_at = str(row["completed_at"] or "-")
+        overall_score = row["overall_score"]
+        total_cost = row["total_cost_usd"]
+        dollars_per_1000_pages = row["dollars_per_1000_pages"]
+        rows.append(
+            (
+                str(row["run_id"]),
+                str(row["status"] or "-"),
+                str(row["model"] or "-"),
+                "-" if overall_score is None else f"{float(overall_score):.3f}",
+                f"{row['cases_failed']}/{row['cases_total']}",
+                "-" if total_cost is None else f"${float(total_cost):.6f}",
+                (
+                    "-"
+                    if dollars_per_1000_pages is None
+                    else f"${float(dollars_per_1000_pages):.2f}"
+                ),
+                completed_at,
+            )
         )
+
+    output_fn(
+        _render_text_table(
+            (
+                "Run",
+                "Status",
+                "Model",
+                "Score",
+                "Failed",
+                "Cost",
+                "$/1k pages",
+                "Completed",
+            ),
+            rows,
+            right_align={0, 3, 5, 6},
+        )
+    )
 
 
 def _run_interactive_benchmark(
@@ -1032,6 +1097,7 @@ def _run_interactive_benchmark(
     output_fn(f"  output: {out_dir}")
     output_fn(f"  manifest: {manifest_path}")
     output_fn("  model: required (enter a model slug)")
+    _print_recent_benchmark_results(out_dir=out_dir, output_fn=output_fn)
 
     model = _prompt_text(
         input_fn,
@@ -1055,8 +1121,8 @@ def _run_interactive_benchmark(
             out_dir=out_dir,
             api_key=None,
             models=[model],
+            output_fn=output_fn,
         )
-        _print_recent_benchmark_results(out_dir=out_dir, output_fn=output_fn)
     except (FileNotFoundError, ValueError) as exc:
         output_fn(
             _friendly_error_message(
@@ -1160,13 +1226,13 @@ def launch_tui(
             continue
 
         if choice == "7":
-            output_fn(_render_status_message("Exiting vlmocr.", ansi_enabled=ansi_enabled))
-            return
-
-        if choice == "8":
             _run_interactive_benchmark(input_fn=input_fn, output_fn=output_fn)
             _pause(input_fn)
             continue
+
+        if choice == "8":
+            output_fn(_render_status_message("Exiting vlmocr.", ansi_enabled=ansi_enabled))
+            return
 
         if choice in {"q", "quit", "exit"}:
             output_fn(_render_status_message("Exiting vlmocr.", ansi_enabled=ansi_enabled))

@@ -316,7 +316,7 @@ def test_launch_tui_can_run_init_flow(
     """The interactive launcher should let users initialize a workspace."""
     docs_dir = tmp_path / "docs"
     out_dir = tmp_path / "converted"
-    responses = iter(["1", "", "7"])
+    responses = iter(["1", "", "8"])
     output_lines: list[str] = []
 
     monkeypatch.setattr(cli, "DEFAULT_DOCS_DIR", docs_dir)
@@ -343,7 +343,7 @@ def test_launch_tui_ocr_default_options_skip_extra_questions(
     docs_dir.mkdir()
     prompts: list[str] = []
     output_lines: list[str] = []
-    responses = iter(["2", "y", "", "y", "", "7"])
+    responses = iter(["2", "y", "", "y", "", "8"])
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(cli, "DEFAULT_DOCS_DIR", docs_dir)
@@ -405,7 +405,7 @@ def test_launch_tui_ocr_requires_final_confirmation(
     out_dir = tmp_path / "converted"
     docs_dir.mkdir()
     output_lines: list[str] = []
-    responses = iter(["2", "y", "", "n", "", "7"])
+    responses = iter(["2", "y", "", "n", "", "8"])
     ocr_called = {"value": False}
 
     monkeypatch.setattr(cli, "DEFAULT_DOCS_DIR", docs_dir)
@@ -451,7 +451,7 @@ def test_launch_tui_ocr_custom_options_still_use_default_directories(
     out_dir = tmp_path / "converted"
     docs_dir.mkdir()
     prompts: list[str] = []
-    responses = iter(["2", "n", "test-key", "openai/gpt-4.1-mini", "200", "jpeg", "4", "2", "", "y", "", "7"])
+    responses = iter(["2", "n", "test-key", "openai/gpt-4.1-mini", "200", "jpeg", "4", "2", "", "y", "", "8"])
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(cli, "DEFAULT_DOCS_DIR", docs_dir)
@@ -521,7 +521,7 @@ def test_launch_tui_ocr_skips_cost_estimate_when_no_files_need_conversion(
     output_lines: list[str] = []
     estimate_called = {"value": False}
     ocr_called = {"value": False}
-    responses = iter(["2", "y", "", "", "7"])
+    responses = iter(["2", "y", "", "", "8"])
 
     monkeypatch.setattr(cli, "DEFAULT_DOCS_DIR", docs_dir)
     monkeypatch.setattr(cli, "DEFAULT_OUT_DIR", out_dir)
@@ -569,7 +569,7 @@ def test_launch_tui_convert_uses_default_directories(
     out_dir = tmp_path / "converted"
     prompts: list[str] = []
     captured: dict[str, object] = {}
-    responses = iter(["3", "y", "n", "", "7"])
+    responses = iter(["3", "y", "n", "", "8"])
 
     monkeypatch.setattr(cli, "DEFAULT_DOCS_DIR", docs_dir)
     monkeypatch.setattr(cli, "DEFAULT_OUT_DIR", out_dir)
@@ -606,7 +606,7 @@ def test_launch_tui_validate_uses_default_directories(
     out_dir = tmp_path / "converted"
     prompts: list[str] = []
     captured: dict[str, Path] = {}
-    responses = iter(["4", "", "7"])
+    responses = iter(["4", "", "8"])
 
     monkeypatch.setattr(cli, "DEFAULT_DOCS_DIR", docs_dir)
     monkeypatch.setattr(cli, "DEFAULT_OUT_DIR", out_dir)
@@ -639,7 +639,7 @@ def test_launch_tui_show_ocr_prompt_displays_file_without_editing(
     prompt_file.write_text("Original prompt line.\n", encoding="utf-8")
     prompts: list[str] = []
     output_lines: list[str] = []
-    responses = iter(["6", "n", "", "7"])
+    responses = iter(["6", "n", "", "8"])
 
     monkeypatch.setattr(cli.ocr, "OCR_PROMPT_PATH", prompt_file)
 
@@ -667,7 +667,7 @@ def test_launch_tui_show_ocr_prompt_can_edit_file(
     prompt_file.write_text("Original prompt line.\n", encoding="utf-8")
     prompts: list[str] = []
     output_lines: list[str] = []
-    responses = iter(["6", "y", "First line", "Second line", "END", "", "7"])
+    responses = iter(["6", "y", "First line", "Second line", "END", "", "8"])
 
     monkeypatch.setattr(cli.ocr, "OCR_PROMPT_PATH", prompt_file)
 
@@ -719,7 +719,7 @@ def test_launch_tui_ocr_can_create_new_prompt_template(
             "END",
             "y",
             "",
-            "7",
+            "8",
         ]
     )
     captured: dict[str, object] = {}
@@ -769,7 +769,8 @@ def test_launch_tui_benchmark_requires_model_slug(
     out_dir.mkdir()
 
     prompts: list[str] = []
-    responses = iter(["8", "openai/gpt-4.1-mini", "y", "", "7"])
+    output_lines: list[str] = []
+    responses = iter(["7", "openai/gpt-4.1-mini", "y", "", "8"])
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(cli, "DEFAULT_DOCS_DIR", docs_dir)
@@ -781,13 +782,36 @@ def test_launch_tui_benchmark_requires_model_slug(
     )
     monkeypatch.setattr(
         cli.benchmark,
-        "run_benchmark",
-        lambda **kwargs: captured.update(kwargs) or {"run_id": 1},
+        "get_recent_benchmark_results",
+        lambda *, database_path, limit=10: [
+            {
+                "run_id": 41,
+                "completed_at": "2026-07-18T12:00:00+00:00",
+                "status": "completed",
+                "model": "openai/gpt-4.1-mini",
+                "cases_total": 8,
+                "cases_failed": 0,
+                "overall_score": 0.981,
+                "total_cost_usd": 0.111111,
+                "dollars_per_1000_pages": 13.89,
+            }
+        ],
     )
+
+    def fake_run_benchmark(**kwargs: object) -> dict[str, int]:
+        assert "Most recent benchmark results" in "\n".join(output_lines)
+        progress_output = kwargs["output_fn"]
+        assert getattr(progress_output, "__self__", None) is output_lines
+        assert getattr(progress_output, "__name__", None) == "append"
+        progress_output("Progress [.] 1/1 pages completed (openai/gpt-4.1-mini: case1)")
+        captured.update(kwargs)
+        return {"run_id": 1}
+
+    monkeypatch.setattr(cli.benchmark, "run_benchmark", fake_run_benchmark)
 
     cli.launch_tui(
         input_fn=lambda prompt: prompts.append(prompt) or next(responses),
-        output_fn=lambda message: None,
+        output_fn=output_lines.append,
     )
 
     assert prompts == [
@@ -803,6 +827,10 @@ def test_launch_tui_benchmark_requires_model_slug(
     assert captured["models"] == ["openai/gpt-4.1-mini"]
     assert captured["api_key"] is None
     assert "case_limit" not in captured
+    assert "Most recent benchmark results" in "\n".join(output_lines)
+    assert "openai/gpt-4.1-mini" in "\n".join(output_lines)
+    assert "\n".join(output_lines).count("Most recent benchmark results") == 1
+    assert "Progress [.] 1/1 pages completed (openai/gpt-4.1-mini: case1)" in "\n".join(output_lines)
 
 
 def test_main_ocr_missing_api_key_shows_setup_instructions(
@@ -968,8 +996,18 @@ def test_main_benchmark_prints_recent_results(
 
     captured = capsys.readouterr()
     assert "Most recent benchmark results" in captured.out
-    assert "run=42" in captured.out
-    assert "model=openai/gpt-4.1-mini" in captured.out
+    assert "| Run" in captured.out
+    assert "| Status" in captured.out
+    assert "openai/gpt-4.1-mini" in captured.out
+    assert "run=42" not in captured.out
+
+
+def test_render_menu_lists_benchmark_before_quit() -> None:
+    rendered = cli._render_menu(ansi_enabled=False)
+
+    assert "[7] Run benchmark (choose model slug)" in rendered
+    assert "[8] Quit" in rendered
+    assert rendered.index("[7] Run benchmark (choose model slug)") < rendered.index("[8] Quit")
 
 
 def test_main_dispatches_benchmark_command_with_explicit_options(
