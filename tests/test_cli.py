@@ -379,12 +379,12 @@ def test_launch_tui_ocr_default_options_skip_extra_questions(
     )
 
     assert prompts == [
-        "Select an option [1-7]: ",
+        "Select an option [1-8]: ",
         "Use default OCR options? [Y/n]: ",
         _template_selection_prompt(),
         "Proceed with OCR using the estimated cost above? [y/N]: ",
         "Press Enter to return to the menu...",
-        "Select an option [1-7]: ",
+        "Select an option [1-8]: ",
     ]
     assert any("Total estimated: $12.3400" in line for line in output_lines)
     assert captured["docs_dir"] == docs_dir
@@ -487,7 +487,7 @@ def test_launch_tui_ocr_custom_options_still_use_default_directories(
     )
 
     assert prompts == [
-        "Select an option [1-7]: ",
+        "Select an option [1-8]: ",
         "Use default OCR options? [Y/n]: ",
         "OpenRouter API key (leave blank to use OPENROUTER_API_KEY or a .env file in the project root): ",
         f"Model [{cli.ocr.DEFAULT_OCR_MODEL}]: ",
@@ -498,7 +498,7 @@ def test_launch_tui_ocr_custom_options_still_use_default_directories(
         _template_selection_prompt(),
         "Proceed with OCR using the estimated cost above? [y/N]: ",
         "Press Enter to return to the menu...",
-        "Select an option [1-7]: ",
+        "Select an option [1-8]: ",
     ]
     assert captured["docs_dir"] == docs_dir
     assert captured["out_dir"] == out_dir
@@ -550,11 +550,11 @@ def test_launch_tui_ocr_skips_cost_estimate_when_no_files_need_conversion(
     )
 
     assert prompts == [
-        "Select an option [1-7]: ",
+        "Select an option [1-8]: ",
         "Use default OCR options? [Y/n]: ",
         _template_selection_prompt(),
         "Press Enter to return to the menu...",
-        "Select an option [1-7]: ",
+        "Select an option [1-8]: ",
     ]
     assert estimate_called["value"] is False
     assert ocr_called["value"] is False
@@ -586,11 +586,11 @@ def test_launch_tui_convert_uses_default_directories(
     )
 
     assert prompts == [
-        "Select an option [1-7]: ",
+        "Select an option [1-8]: ",
         "Remove repeated header/footer lines [y/N]: ",
         "Inject footnotes inline [Y/n]: ",
         "Press Enter to return to the menu...",
-        "Select an option [1-7]: ",
+        "Select an option [1-8]: ",
     ]
     assert captured["input_dir"] == out_dir / "json" / "raw"
     assert captured["out_dir"] == out_dir
@@ -623,9 +623,9 @@ def test_launch_tui_validate_uses_default_directories(
     )
 
     assert prompts == [
-        "Select an option [1-7]: ",
+        "Select an option [1-8]: ",
         "Press Enter to return to the menu...",
-        "Select an option [1-7]: ",
+        "Select an option [1-8]: ",
     ]
     assert captured["docs_dir"] == docs_dir
     assert captured["out_dir"] == out_dir
@@ -650,10 +650,10 @@ def test_launch_tui_show_ocr_prompt_displays_file_without_editing(
 
     assert prompt_file.read_text(encoding="utf-8") == "Original prompt line.\n"
     assert prompts == [
-        "Select an option [1-7]: ",
+        "Select an option [1-8]: ",
         "Edit OCR prompt now [y/N]: ",
         "Press Enter to return to the menu...",
-        "Select an option [1-7]: ",
+        "Select an option [1-8]: ",
     ]
     assert any("OCR prompt file:" in line for line in output_lines)
     assert any("Original prompt line." in line for line in output_lines)
@@ -678,13 +678,13 @@ def test_launch_tui_show_ocr_prompt_can_edit_file(
 
     assert prompt_file.read_text(encoding="utf-8") == "First line\nSecond line\n"
     assert prompts == [
-        "Select an option [1-7]: ",
+        "Select an option [1-8]: ",
         "Edit OCR prompt now [y/N]: ",
         "prompt> ",
         "prompt> ",
         "prompt> ",
         "Press Enter to return to the menu...",
-        "Select an option [1-7]: ",
+        "Select an option [1-8]: ",
     ]
     assert any("Saved OCR prompt to" in line for line in output_lines)
 
@@ -757,6 +757,52 @@ def test_launch_tui_ocr_can_create_new_prompt_template(
         encoding="utf-8"
     )
     assert captured["prompt"] == "Extract every table exactly."
+
+
+def test_launch_tui_benchmark_requires_model_slug(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Benchmark menu option should prompt for model slug and run all benchmark cases."""
+    docs_dir = tmp_path / "docs"
+    out_dir = tmp_path / "converted"
+    docs_dir.mkdir()
+    out_dir.mkdir()
+
+    prompts: list[str] = []
+    responses = iter(["8", "openai/gpt-4.1-mini", "y", "", "7"])
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(cli, "DEFAULT_DOCS_DIR", docs_dir)
+    monkeypatch.setattr(cli, "DEFAULT_OUT_DIR", out_dir)
+    monkeypatch.setattr(
+        cli.benchmark,
+        "get_default_manifest_path",
+        lambda *, out_dir: out_dir / "benchmark" / "manifest.json",
+    )
+    monkeypatch.setattr(
+        cli.benchmark,
+        "run_benchmark",
+        lambda **kwargs: captured.update(kwargs) or {"run_id": 1},
+    )
+
+    cli.launch_tui(
+        input_fn=lambda prompt: prompts.append(prompt) or next(responses),
+        output_fn=lambda message: None,
+    )
+
+    assert prompts == [
+        "Select an option [1-8]: ",
+        "Model slug (required, e.g. openai/gpt-4.1-mini): ",
+        "Proceed with benchmark now [y/N]: ",
+        "Press Enter to return to the menu...",
+        "Select an option [1-8]: ",
+    ]
+    assert captured["manifest_path"] == out_dir / "benchmark" / "manifest.json"
+    assert captured["docs_dir"] == docs_dir
+    assert captured["out_dir"] == out_dir
+    assert captured["models"] == ["openai/gpt-4.1-mini"]
+    assert captured["api_key"] is None
+    assert "case_limit" not in captured
 
 
 def test_main_ocr_missing_api_key_shows_setup_instructions(
@@ -862,33 +908,68 @@ def test_main_dispatches_benchmark_repair_gold_escapes_with_explicit_manifest(
     assert captured["manifest_path"] == Path("bench/manifest.json")
 
 
-def test_main_dispatches_benchmark_command_with_defaults(
-    monkeypatch: pytest.MonkeyPatch,
+def test_main_benchmark_requires_model_slug(
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Benchmark command should default to the OCR default model and default manifest path."""
-    captured: dict[str, object] = {}
+    """Benchmark command should require at least one --model slug."""
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main(["benchmark", "--docs-dir", "docs", "--out-dir", "converted"])
 
-    def fake_default_manifest_path(*, out_dir: Path) -> Path:
-        return out_dir / "benchmark" / "manifest.json"
+    captured = capsys.readouterr()
 
-    def fake_run_benchmark(**kwargs: object) -> dict[str, object]:
-        captured.update(kwargs)
-        return {"run_id": 1}
+    assert exc_info.value.code == 2
+    assert "--model" in captured.err
+    assert "model slug" in captured.err.lower()
 
+
+def test_main_benchmark_prints_recent_results(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Benchmark command should print recent benchmark history after run completion."""
     monkeypatch.setattr(
         cli.benchmark,
         "get_default_manifest_path",
-        fake_default_manifest_path,
+        lambda *, out_dir: out_dir / "benchmark" / "manifest.json",
     )
-    monkeypatch.setattr(cli.benchmark, "run_benchmark", fake_run_benchmark)
+    monkeypatch.setattr(
+        cli.benchmark,
+        "run_benchmark",
+        lambda **kwargs: {"run_id": 42},
+    )
+    monkeypatch.setattr(
+        cli.benchmark,
+        "get_recent_benchmark_results",
+        lambda *, database_path, limit=10: [
+            {
+                "run_id": 42,
+                "completed_at": "2026-07-18T12:34:56+00:00",
+                "status": "completed",
+                "model": "openai/gpt-4.1-mini",
+                "cases_total": 8,
+                "cases_scored": 8,
+                "cases_failed": 0,
+                "overall_score": 0.987,
+                "total_cost_usd": 0.123456,
+                "dollars_per_1000_pages": 15.43,
+            }
+        ],
+    )
 
-    cli.main(["benchmark", "--docs-dir", "docs", "--out-dir", "converted"])
+    cli.main([
+        "benchmark",
+        "--docs-dir",
+        "docs",
+        "--out-dir",
+        "converted",
+        "--model",
+        "openai/gpt-4.1-mini",
+    ])
 
-    assert captured["manifest_path"] == Path("converted") / "benchmark" / "manifest.json"
-    assert captured["docs_dir"] == Path("docs")
-    assert captured["out_dir"] == Path("converted")
-    assert captured["models"] == [cli.ocr.DEFAULT_OCR_MODEL]
-    assert captured["prompt_template"] == cli.ocr.DEFAULT_OCR_PROMPT_TEMPLATE
+    captured = capsys.readouterr()
+    assert "Most recent benchmark results" in captured.out
+    assert "run=42" in captured.out
+    assert "model=openai/gpt-4.1-mini" in captured.out
 
 
 def test_main_dispatches_benchmark_command_with_explicit_options(

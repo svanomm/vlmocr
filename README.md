@@ -119,6 +119,7 @@ This menu includes:
 - project structure validation
 - quickstart help
 - show/edit default OCR prompt
+- benchmark workflow (requires explicit model slug)
 
 Command mode:
 
@@ -146,9 +147,6 @@ uv run vlmocr benchmark --out-dir converted --model google/gemini-3.1-flash-lite
 
 # Compare multiple models in one run
 uv run vlmocr benchmark --out-dir converted --model google/gemini-3.1-flash-lite-preview --model openai/gpt-4.1-mini
-
-# Low-cost API smoke test (one benchmark case = one page)
-uv run vlmocr benchmark --out-dir converted --case-limit 1
 ```
 
 ## Deterministic benchmark workflow
@@ -167,11 +165,10 @@ uv run vlmocr benchmark --out-dir converted --case-limit 1
 - scores candidate raw markdown against gold using deterministic text/math/structure metrics
 - writes run reports to `converted/benchmark/reports`
 - stores every run, model summary, and case result in `converted/benchmark/history.db`
+- prints the 10 most recent benchmark model summaries after each benchmark run
 - verifies `docs/benchmark` integrity before running if that folder exists
 - records OpenRouter-reported usage and cost per case (`usage.cost`) when available
 - reports per-model total benchmark cost in USD and normalized dollars per 1000 pages
-
-Because each case is one page, `--case-limit 1` is the recommended way to run cheap API validation checks.
 
 Selected academic benchmark pages (v1):
 

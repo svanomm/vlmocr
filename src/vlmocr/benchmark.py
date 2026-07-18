@@ -1259,6 +1259,49 @@ class BenchmarkHistoryDatabase:
         self.connection.close()
 
 
+def get_recent_benchmark_results(
+    *,
+    database_path: Path,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    """Return recent benchmark model summary rows from history DB."""
+    if limit < 1:
+        raise ValueError("limit must be >= 1.")
+
+    resolved_database = Path(database_path)
+    if not resolved_database.exists():
+        return []
+
+    try:
+        with sqlite3.connect(resolved_database) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute(
+                """
+                SELECT
+                    br.id AS run_id,
+                    br.completed_at,
+                    br.status,
+                    ms.model,
+                    ms.cases_total,
+                    ms.cases_scored,
+                    ms.cases_failed,
+                    ms.overall_score,
+                    ms.total_cost_usd,
+                    ms.dollars_per_1000_pages
+                  FROM benchmark_model_summaries AS ms
+                  JOIN benchmark_runs AS br
+                    ON br.id = ms.run_id
+                 ORDER BY br.id DESC, ms.id DESC
+                 LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+
+    return [dict(row) for row in rows]
+
+
 def run_benchmark(
     *,
     manifest_path: Path,
@@ -1308,7 +1351,7 @@ def run_benchmark(
     if not selected_cases:
         raise ValueError("No benchmark cases selected. Check --case-id and --case-limit.")
 
-    selected_models = [model.strip() for model in (models or [ocr.DEFAULT_OCR_MODEL])]
+    selected_models = [model.strip() for model in (models or [])]
     selected_models = [model for model in selected_models if model]
     if not selected_models:
         raise ValueError("At least one non-empty model id is required.")

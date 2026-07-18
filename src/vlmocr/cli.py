@@ -170,6 +170,7 @@ def _render_menu(*, ansi_enabled: bool) -> str:
         "[5] Show quickstart",
         "[6] Show/edit default OCR prompt",
         "[7] Quit",
+        "[8] Run benchmark (choose model slug)",
         "",
         "tip: press Ctrl+C at any prompt to leave the launcher.",
     ]
@@ -342,7 +343,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--model",
         action="append",
         default=None,
-        help="Model identifier. Repeat --model to compare multiple models.",
+        help="Required model slug. Repeat --model to compare multiple models.",
     )
     benchmark_parser.add_argument(
         "--prompt-template",
@@ -532,12 +533,12 @@ def _friendly_error_message(args: argparse.Namespace, exc: Exception) -> str:
         details.extend(
             [
                 (
-                    "If this is your first benchmark run, initialize local benchmark data with "
-                    f"`vlmocr benchmark-init-academic --docs-dir {args.docs_dir} --out-dir {args.out_dir}`."
+                    "Benchmark requires an explicit model slug. "
+                    "Example: `vlmocr benchmark --model openai/gpt-4.1-mini`"
                 ),
                 (
-                    "For a low-cost API smoke test, run one case only: "
-                    "`vlmocr benchmark --case-limit 1`"
+                    "If this is your first benchmark run, initialize local benchmark data with "
+                    f"`vlmocr benchmark-init-academic --docs-dir {args.docs_dir} --out-dir {args.out_dir}`."
                 ),
                 "",
             ]
@@ -650,7 +651,12 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> N
             return
 
         if args.command == "benchmark":
-            selected_models = args.model or [ocr.DEFAULT_OCR_MODEL]
+            selected_models = args.model or []
+            if not selected_models:
+                raise ValueError(
+                    "Benchmark requires at least one --model <model_slug> argument."
+                )
+
             benchmark.run_benchmark(
                 manifest_path=args.manifest or benchmark.get_default_manifest_path(
                     out_dir=args.out_dir
@@ -669,6 +675,10 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> N
                 max_retries=args.max_retries,
                 case_limit=args.case_limit,
                 case_ids=args.case_id,
+            )
+            _print_recent_benchmark_results(
+                out_dir=args.out_dir,
+                database_path=args.database,
             )
             return
     except (FileNotFoundError, ValueError) as exc:
@@ -974,6 +984,92 @@ def _show_or_edit_ocr_prompt(
     output_fn(f"Saved OCR prompt to {prompt_path}.")
 
 
+def _print_recent_benchmark_results(
+    *,
+    out_dir: Path,
+    database_path: Path | None = None,
+    output_fn: OutputFunc = print,
+) -> None:
+    resolved_database = Path(
+        database_path or benchmark.get_default_database_path(out_dir=out_dir)
+    )
+    recent = benchmark.get_recent_benchmark_results(
+        database_path=resolved_database,
+        limit=10,
+    )
+
+    if not recent:
+        output_fn(f"No benchmark history found in {resolved_database}.")
+        return
+
+    output_fn("Most recent benchmark results (latest 10 model summaries):")
+    for row in recent:
+        completed_at = row["completed_at"] or "-"
+        output_fn(
+            "  "
+            f"run={row['run_id']} "
+            f"status={row['status']} "
+            f"model={row['model']} "
+            f"overall={row['overall_score']:.3f} "
+            f"failed={row['cases_failed']}/{row['cases_total']} "
+            f"cost=${row['total_cost_usd']:.6f} "
+            f"$/1k_pages=${row['dollars_per_1000_pages']:.2f} "
+            f"completed={completed_at}"
+        )
+
+
+def _run_interactive_benchmark(
+    *,
+    input_fn: InputFunc,
+    output_fn: OutputFunc,
+) -> None:
+    docs_dir = DEFAULT_DOCS_DIR
+    out_dir = DEFAULT_OUT_DIR
+    manifest_path = benchmark.get_default_manifest_path(out_dir=out_dir)
+
+    output_fn("Benchmark settings:")
+    output_fn(f"  docs: {docs_dir}")
+    output_fn(f"  output: {out_dir}")
+    output_fn(f"  manifest: {manifest_path}")
+    output_fn("  model: required (enter a model slug)")
+
+    model = _prompt_text(
+        input_fn,
+        "Model slug (required, e.g. openai/gpt-4.1-mini)",
+        default="",
+    )
+    if not model:
+        output_fn("Benchmark requires a model slug. Example: openai/gpt-4.1-mini")
+        return
+
+    output_fn(f"Benchmark will run all cases for model: {model}")
+
+    if not _prompt_bool(input_fn, "Proceed with benchmark now", default=False):
+        output_fn("Benchmark cancelled.")
+        return
+
+    try:
+        benchmark.run_benchmark(
+            manifest_path=manifest_path,
+            docs_dir=docs_dir,
+            out_dir=out_dir,
+            api_key=None,
+            models=[model],
+        )
+        _print_recent_benchmark_results(out_dir=out_dir, output_fn=output_fn)
+    except (FileNotFoundError, ValueError) as exc:
+        output_fn(
+            _friendly_error_message(
+                argparse.Namespace(
+                    command="benchmark",
+                    docs_dir=docs_dir,
+                    out_dir=out_dir,
+                ),
+                exc,
+            )
+        )
+
+
 def launch_tui(
     *,
     input_fn: InputFunc = input,
@@ -990,7 +1086,7 @@ def launch_tui(
         output_fn(_render_menu(ansi_enabled=ansi_enabled))
 
         try:
-            choice = input_fn("Select an option [1-7]: ").strip()
+            choice = input_fn("Select an option [1-8]: ").strip()
         except (EOFError, KeyboardInterrupt):
             output_fn("")
             output_fn(_render_status_message("Exiting vlmocr.", ansi_enabled=ansi_enabled))
@@ -1067,13 +1163,18 @@ def launch_tui(
             output_fn(_render_status_message("Exiting vlmocr.", ansi_enabled=ansi_enabled))
             return
 
+        if choice == "8":
+            _run_interactive_benchmark(input_fn=input_fn, output_fn=output_fn)
+            _pause(input_fn)
+            continue
+
         if choice in {"q", "quit", "exit"}:
             output_fn(_render_status_message("Exiting vlmocr.", ansi_enabled=ansi_enabled))
             return
 
         output_fn(
             _render_status_message(
-                "Please choose a menu option from 1 to 7.",
+                "Please choose a menu option from 1 to 8.",
                 ansi_enabled=ansi_enabled,
             )
         )

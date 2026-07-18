@@ -392,6 +392,88 @@ def test_benchmark_history_database_records_incremental_results(
     assert status == "completed"
 
 
+def test_get_recent_benchmark_results_returns_latest_rows(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "history.db"
+    history = benchmark.BenchmarkHistoryDatabase(db_path)
+
+    run_id_1 = history.start_run(
+        manifest_path=tmp_path / "manifest.json",
+        manifest_name="test-manifest",
+        manifest_version="1.0",
+        models=["model-a"],
+        args_payload={},
+    )
+    history.record_model_summary(
+        run_id=run_id_1,
+        model="model-a",
+        summary={
+            "cases_total": 1,
+            "cases_scored": 1,
+            "cases_failed": 0,
+            "pages_billed": 1,
+            "prompt_tokens": 10,
+            "completion_tokens": 10,
+            "total_tokens": 20,
+            "total_cost_usd": 0.001,
+            "dollars_per_1000_pages": 1.0,
+            "text_score": 1.0,
+            "math_score": 1.0,
+            "structure_score": 1.0,
+            "overall_score": 1.0,
+        },
+    )
+    history.finish_run(
+        run_id=run_id_1,
+        status="completed",
+        report_path=tmp_path / "report-1.json",
+        error=None,
+    )
+
+    run_id_2 = history.start_run(
+        manifest_path=tmp_path / "manifest.json",
+        manifest_name="test-manifest",
+        manifest_version="1.0",
+        models=["model-b"],
+        args_payload={},
+    )
+    history.record_model_summary(
+        run_id=run_id_2,
+        model="model-b",
+        summary={
+            "cases_total": 2,
+            "cases_scored": 2,
+            "cases_failed": 0,
+            "pages_billed": 2,
+            "prompt_tokens": 20,
+            "completion_tokens": 20,
+            "total_tokens": 40,
+            "total_cost_usd": 0.002,
+            "dollars_per_1000_pages": 1.0,
+            "text_score": 0.9,
+            "math_score": 0.9,
+            "structure_score": 0.9,
+            "overall_score": 0.9,
+        },
+    )
+    history.finish_run(
+        run_id=run_id_2,
+        status="completed",
+        report_path=tmp_path / "report-2.json",
+        error=None,
+    )
+    history.close()
+
+    rows = benchmark.get_recent_benchmark_results(database_path=db_path, limit=10)
+
+    assert len(rows) == 2
+    assert rows[0]["run_id"] == run_id_2
+    assert rows[0]["model"] == "model-b"
+    assert rows[1]["run_id"] == run_id_1
+    assert rows[1]["model"] == "model-a"
+
+
 def test_run_benchmark_writes_report_and_history(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
