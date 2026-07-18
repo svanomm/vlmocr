@@ -139,7 +139,7 @@ uv run vlmocr convert --no-inject-footnotes
 uv run vlmocr estimate-cost --docs-dir docs
 uv run vlmocr estimate-cost --docs-dir docs --no-recursive
 
-# Build local academic benchmark data (10 difficult one-page cases)
+# Build local academic benchmark data (difficult one-page cases)
 uv run vlmocr benchmark-init-academic --docs-dir docs --out-dir converted
 
 # Run benchmark for one model
@@ -177,18 +177,6 @@ uv run vlmocr benchmark-rescore-reports --out-dir converted
 - records OpenRouter-reported usage and cost per case (`usage.cost`) when available
 - reports per-model total benchmark cost in USD and normalized dollars per 1000 pages
 
-Selected academic benchmark pages (v1):
-
-- Abadie, Athey, Imbens, Wooldridge (2017) -  When Should you Adjust Standard Errors for Clustering, page 11
-- Cameron and Miller (2015) - Practitioner's Guide to Cluster-Robust Inference, page 31
-- Balli and Sorensen (2012) - Interaction Effects in Econometrics, page 17
-- Balli and Sorensen (2012) - Interaction Effects in Econometrics, page 10
-- Benoit (2011) - Linear Regression Models with Logarithmic Transformations, page 4
-- Norton and Dowd (2018) - Log Odds and the Interpretation of Logit Models, page 12
-- Youssef (2022) - Detecting of Multicollinearity, Autocorrelation, and Heteroscedasticity in Regression Analysis, page 6
-- Wainer (1984) - How to Display Data Badly, page 10
-- Anscombe's quartet - Wikipedia, page 2
-- predict, page 1
 
 ## Supported OCR inputs
 

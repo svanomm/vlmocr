@@ -732,7 +732,11 @@ def test_run_benchmark_writes_report_and_history(
 
     assert report["manifest"]["case_count"] == 1
     assert report["scoring"]["overall_score"] == "content_score"
+    assert report["run_id"] is None
+    assert len(report["run_ids"]) == 2
+    assert len(set(report["run_ids"])) == 2
     assert len(report["models"]) == 2
+    assert len({model_report["run_id"] for model_report in report["models"]}) == 2
     assert report["ranking"][0]["model"] == "model-a"
     model_summaries = {
         model_report["model"]: model_report["summary"] for model_report in report["models"]
@@ -761,6 +765,12 @@ def test_run_benchmark_writes_report_and_history(
 
     with sqlite3.connect(history_path) as connection:
         run_count = connection.execute("SELECT COUNT(*) FROM benchmark_runs").fetchone()[0]
+        stored_models = [
+            json.loads(row[0])
+            for row in connection.execute(
+                "SELECT models_json FROM benchmark_runs ORDER BY id"
+            ).fetchall()
+        ]
         case_count = connection.execute(
             "SELECT COUNT(*) FROM benchmark_case_results"
         ).fetchone()[0]
@@ -768,6 +778,7 @@ def test_run_benchmark_writes_report_and_history(
             "SELECT SUM(cost_usd) FROM benchmark_case_results"
         ).fetchone()[0]
 
-    assert run_count == 1
+    assert run_count == 2
+    assert stored_models == [["model-a"], ["model-b"]]
     assert case_count == 2
     assert float(total_cost) == pytest.approx(0.005)

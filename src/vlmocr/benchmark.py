@@ -1777,7 +1777,14 @@ def rescore_benchmark_reports(
                     )
 
                 updated_models: list[dict[str, Any]] = []
-                pending_db_updates: list[tuple[str, list[dict[str, Any]], dict[str, Any]]] = []
+                pending_db_updates: list[
+                    tuple[int | None, str, list[dict[str, Any]], dict[str, Any]]
+                ] = []
+                fallback_run_id = (
+                    int(report_payload["run_id"])
+                    if isinstance(report_payload.get("run_id"), int)
+                    else None
+                )
                 for model_payload in models_payload:
                     model_name = str(model_payload.get("model", "")).strip()
                     if not model_name:
@@ -1795,28 +1802,51 @@ def rescore_benchmark_reports(
                         _rescore_case_result(report_path=resolved_report, result=result)
                         for result in existing_cases
                     ]
-                    summary = _summarize_model_cases(rescored_case_results)
-                    updated_models.append(
-                        {
-                            "model": model_name,
-                            "summary": summary,
-                            "cases": rescored_case_results,
-                        }
+                    model_run_id = (
+                        int(model_payload["run_id"])
+                        if isinstance(model_payload.get("run_id"), int)
+                        else fallback_run_id
                     )
+                    summary = _summarize_model_cases(rescored_case_results)
+                    updated_model_payload = {
+                        "model": model_name,
+                        "summary": summary,
+                        "cases": rescored_case_results,
+                    }
+                    if model_run_id is not None:
+                        updated_model_payload["run_id"] = model_run_id
+                    updated_models.append(updated_model_payload)
                     pending_db_updates.append(
-                        (model_name, rescored_case_results, summary)
+                        (model_run_id, model_name, rescored_case_results, summary)
                     )
 
-                if db is not None and isinstance(report_payload.get("run_id"), int):
-                    for model_name, rescored_case_results, summary in pending_db_updates:
+                if db is not None:
+                    for (
+                        model_run_id,
+                        model_name,
+                        rescored_case_results,
+                        summary,
+                    ) in pending_db_updates:
+                        if model_run_id is None:
+                            continue
                         db.replace_model_results(
-                            run_id=int(report_payload["run_id"]),
+                            run_id=model_run_id,
                             model=model_name,
                             case_results=rescored_case_results,
                             summary=summary,
                         )
 
                 report_payload["models"] = updated_models
+                updated_run_ids = [
+                    int(model_report["run_id"])
+                    for model_report in updated_models
+                    if isinstance(model_report.get("run_id"), int)
+                ]
+                if updated_run_ids:
+                    report_payload["run_ids"] = updated_run_ids
+                    report_payload["run_id"] = (
+                        updated_run_ids[0] if len(updated_run_ids) == 1 else None
+                    )
                 report_payload["ranking"] = _build_ranking(updated_models)
                 report_payload["scoring"] = _build_scoring_metadata()
                 report_payload["rescored_at"] = _utc_now_iso()
@@ -1919,42 +1949,40 @@ def run_benchmark(
     candidate_root = get_default_candidates_dir(out_dir=out_dir)
 
     db = BenchmarkHistoryDatabase(resolved_database)
-    run_id: int | None = None
+    run_ids: list[int] = []
     report_path: Path | None = None
     total_pages = len(selected_models) * len(selected_cases)
     completed_pages = 0
+    batch_timestamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
 
     try:
-        run_id = db.start_run(
-            manifest_path=manifest_path,
-            manifest_name=manifest.name,
-            manifest_version=manifest.version,
-            models=selected_models,
-            args_payload={
-                "docs_dir": str(docs_dir),
-                "manifest_path": str(manifest_path),
-                "prompt_template": prompt_template,
-                "dpi": dpi,
-                "fmt": fmt,
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-                "max_retries": max_retries,
-                "case_limit": case_limit,
-                "case_ids": case_ids or [],
-            },
-        )
-
-        run_token = (
-            f"run-{run_id:06d}-"
-            f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
-        )
-
         model_reports: list[dict[str, Any]] = []
         output_fn(
             f"Benchmark progress: [{' ' * total_pages}] 0/{total_pages} pages completed"
         )
 
         for model in selected_models:
+            run_id = db.start_run(
+                manifest_path=manifest_path,
+                manifest_name=manifest.name,
+                manifest_version=manifest.version,
+                models=[model],
+                args_payload={
+                    "docs_dir": str(docs_dir),
+                    "manifest_path": str(manifest_path),
+                    "prompt_template": prompt_template,
+                    "dpi": dpi,
+                    "fmt": fmt,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                    "max_retries": max_retries,
+                    "case_limit": case_limit,
+                    "case_ids": case_ids or [],
+                },
+            )
+            run_ids.append(run_id)
+
+            run_token = f"run-{run_id:06d}-{batch_timestamp}"
             output_fn(f"Benchmarking model: {model}")
             model_slug = _slugify_model_name(model)
             model_dir = candidate_root / run_token / model_slug
@@ -2080,6 +2108,7 @@ def run_benchmark(
 
             model_reports.append(
                 {
+                    "run_id": run_id,
                     "model": model,
                     "summary": summary,
                     "cases": case_results,
@@ -2087,9 +2116,12 @@ def run_benchmark(
             )
 
         ranking = _build_ranking(model_reports)
+        report_run_ids = [int(model_report["run_id"]) for model_report in model_reports]
+        primary_run_id = report_run_ids[0] if report_run_ids else None
 
         report_payload = {
-            "run_id": run_id,
+            "run_id": primary_run_id if len(report_run_ids) == 1 else None,
+            "run_ids": report_run_ids,
             "created_at": _utc_now_iso(),
             "scoring": _build_scoring_metadata(),
             "manifest": {
@@ -2102,24 +2134,29 @@ def run_benchmark(
             "ranking": ranking,
         }
 
-        report_path = resolved_reports_dir / f"{run_token}.json"
+        if primary_run_id is not None and len(report_run_ids) == 1:
+            report_token = f"run-{primary_run_id:06d}-{batch_timestamp}"
+        else:
+            report_token = f"benchmark-{batch_timestamp}"
+        report_path = resolved_reports_dir / f"{report_token}.json"
         _write_json(report_path, report_payload)
 
-        db.finish_run(
-            run_id=run_id,
-            status="completed",
-            report_path=report_path,
-            error=None,
-        )
+        for completed_run_id in run_ids:
+            db.finish_run(
+                run_id=completed_run_id,
+                status="completed",
+                report_path=report_path,
+                error=None,
+            )
 
         output_fn(f"Benchmark report written: {report_path}")
         output_fn(f"Benchmark history database: {resolved_database}")
 
         return report_payload
     except Exception as exc:
-        if run_id is not None:
+        for started_run_id in run_ids:
             db.finish_run(
-                run_id=run_id,
+                run_id=started_run_id,
                 status="failed",
                 report_path=report_path,
                 error=str(exc),
