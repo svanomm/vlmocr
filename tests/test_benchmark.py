@@ -170,6 +170,11 @@ def test_benchmark_history_database_records_incremental_results(
             "math_score": 1.0,
             "structure_score": 1.0,
             "overall_score": 1.0,
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "cost_usd": 0.001,
+            "dollars_per_1000_pages": 1.0,
             "candidate_json_path": "candidate.json",
             "gold_json_path": "gold.json",
             "error": None,
@@ -183,6 +188,12 @@ def test_benchmark_history_database_records_incremental_results(
             "cases_total": 1,
             "cases_scored": 1,
             "cases_failed": 0,
+            "pages_billed": 1,
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "total_cost_usd": 0.001,
+            "dollars_per_1000_pages": 1.0,
             "text_score": 1.0,
             "math_score": 1.0,
             "structure_score": 1.0,
@@ -262,7 +273,7 @@ def test_run_benchmark_writes_report_and_history(
         lambda template_name=benchmark.ocr.DEFAULT_OCR_PROMPT_TEMPLATE: "prompt",
     )
 
-    def fake_ocr_page(
+    def fake_ocr_page_with_usage(
         client,
         base64_image,
         *,
@@ -271,12 +282,28 @@ def test_run_benchmark_writes_report_and_history(
         prompt=None,
         temperature=benchmark.ocr.DEFAULT_VLM_TEMPERATURE,
         max_tokens=benchmark.ocr.DEFAULT_OCR_MAX_TOKENS,
-    ) -> str:
+    ) -> tuple[str, benchmark.ocr.OCRPageUsage]:
         if model == "model-a":
-            return gold_markdown
-        return "# Sample\n\n$E=mc^3$"
+            return (
+                gold_markdown,
+                benchmark.ocr.OCRPageUsage(
+                    prompt_tokens=100,
+                    completion_tokens=50,
+                    total_tokens=150,
+                    cost=0.002,
+                ),
+            )
+        return (
+            "# Sample\n\n$E=mc^3$",
+            benchmark.ocr.OCRPageUsage(
+                prompt_tokens=120,
+                completion_tokens=60,
+                total_tokens=180,
+                cost=0.003,
+            ),
+        )
 
-    monkeypatch.setattr(benchmark.ocr, "_ocr_page", fake_ocr_page)
+    monkeypatch.setattr(benchmark.ocr, "_ocr_page_with_usage", fake_ocr_page_with_usage)
 
     out_dir = tmp_path / "converted"
     report = benchmark.run_benchmark(
@@ -291,6 +318,14 @@ def test_run_benchmark_writes_report_and_history(
     assert report["manifest"]["case_count"] == 1
     assert len(report["models"]) == 2
     assert report["ranking"][0]["model"] == "model-a"
+    model_summaries = {
+        model_report["model"]: model_report["summary"] for model_report in report["models"]
+    }
+    assert model_summaries["model-a"]["total_cost_usd"] == pytest.approx(0.002)
+    assert model_summaries["model-a"]["dollars_per_1000_pages"] == pytest.approx(2.0)
+    assert model_summaries["model-b"]["total_cost_usd"] == pytest.approx(0.003)
+    assert model_summaries["model-b"]["dollars_per_1000_pages"] == pytest.approx(3.0)
+    assert report["ranking"][0]["dollars_per_1000_pages"] == pytest.approx(2.0)
 
     history_path = benchmark.get_default_database_path(out_dir=out_dir)
     assert history_path.exists()
@@ -300,6 +335,10 @@ def test_run_benchmark_writes_report_and_history(
         case_count = connection.execute(
             "SELECT COUNT(*) FROM benchmark_case_results"
         ).fetchone()[0]
+        total_cost = connection.execute(
+            "SELECT SUM(cost_usd) FROM benchmark_case_results"
+        ).fetchone()[0]
 
     assert run_count == 1
     assert case_count == 2
+    assert float(total_cost) == pytest.approx(0.005)

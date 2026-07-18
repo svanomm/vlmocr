@@ -13,6 +13,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import dotenv
 import fitz
@@ -78,6 +79,16 @@ class SkippedOCRInput:
 
     path: Path
     reason: str
+
+
+@dataclass(frozen=True)
+class OCRPageUsage:
+    """Usage metadata returned by OpenRouter for one OCR request."""
+
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    cost: float | None
 
 
 OutputFunc = Callable[[str], None]
@@ -609,6 +620,105 @@ def render_document_to_images(
     )
 
 
+def _coerce_usage_int(value: object) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return max(0, value)
+    if isinstance(value, float):
+        return max(0, int(value))
+    if isinstance(value, str):
+        try:
+            return max(0, int(float(value)))
+        except ValueError:
+            return 0
+    return 0
+
+
+def _coerce_usage_cost(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return max(0.0, float(value))
+    if isinstance(value, str):
+        try:
+            return max(0.0, float(value))
+        except ValueError:
+            return None
+    return None
+
+
+def _extract_openrouter_usage(response: Any) -> OCRPageUsage:
+    """Extract usage and cost metadata from an OpenRouter chat completion response."""
+    usage_payload: dict[str, Any] = {}
+
+    if hasattr(response, "model_dump"):
+        dumped = response.model_dump(mode="json")
+        if isinstance(dumped, dict):
+            maybe_usage = dumped.get("usage")
+            if isinstance(maybe_usage, dict):
+                usage_payload = maybe_usage
+
+    if not usage_payload:
+        usage_obj = getattr(response, "usage", None)
+        if hasattr(usage_obj, "model_dump"):
+            dumped_usage = usage_obj.model_dump(mode="json")
+            if isinstance(dumped_usage, dict):
+                usage_payload = dumped_usage
+        elif isinstance(usage_obj, dict):
+            usage_payload = usage_obj
+
+    prompt_tokens = _coerce_usage_int(usage_payload.get("prompt_tokens"))
+    completion_tokens = _coerce_usage_int(usage_payload.get("completion_tokens"))
+    total_tokens = _coerce_usage_int(usage_payload.get("total_tokens"))
+    cost = _coerce_usage_cost(usage_payload.get("cost"))
+
+    if total_tokens == 0:
+        total_tokens = prompt_tokens + completion_tokens
+
+    return OCRPageUsage(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        cost=cost,
+    )
+
+
+def _ocr_page_with_usage(
+    client: OpenAI,
+    base64_image: str,
+    *,
+    model: str = DEFAULT_OCR_MODEL,
+    fmt: str = DEFAULT_OCR_IMAGE_FORMAT,
+    prompt: str | None = None,
+    temperature: float = DEFAULT_VLM_TEMPERATURE,
+    max_tokens: int = DEFAULT_OCR_MAX_TOKENS,
+) -> tuple[str, OCRPageUsage]:
+    """Send a page image to a vision model and return markdown plus OpenRouter usage."""
+    resolved_prompt = _resolve_prompt(prompt)
+    mime = "image/jpeg" if fmt == "jpeg" else "image/png"
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": resolved_prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime};base64,{base64_image}"},
+                    },
+                ],
+            }
+        ],
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+    markdown = response.choices[0].message.content or ""
+    usage = _extract_openrouter_usage(response)
+    return markdown, usage
+
+
 def _ocr_page(
     client: OpenAI,
     base64_image: str,
@@ -633,26 +743,16 @@ def _ocr_page(
     Returns:
         Markdown text extracted from the page image.
     """
-    resolved_prompt = _resolve_prompt(prompt)
-    mime = "image/jpeg" if fmt == "jpeg" else "image/png"
-    response = client.chat.completions.create(
+    markdown, _ = _ocr_page_with_usage(
+        client,
+        base64_image,
         model=model,
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": resolved_prompt},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:{mime};base64,{base64_image}"},
-                    },
-                ],
-            }
-        ],
+        fmt=fmt,
+        prompt=prompt,
         temperature=temperature,
         max_tokens=max_tokens,
     )
-    return response.choices[0].message.content or ""
+    return markdown
 
 
 def convert_file(

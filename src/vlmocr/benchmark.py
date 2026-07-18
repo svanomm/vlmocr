@@ -180,6 +180,18 @@ def _safe_float(value: float) -> float:
     return max(0.0, min(1.0, value))
 
 
+def _safe_non_negative_float(value: float | None) -> float:
+    if value is None:
+        return 0.0
+    return max(0.0, float(value))
+
+
+def _dollars_per_1000_pages(*, total_cost_usd: float, pages: int) -> float:
+    if pages <= 0:
+        return 0.0
+    return _safe_non_negative_float((total_cost_usd / pages) * 1000.0)
+
+
 def _slugify_model_name(model: str) -> str:
     lowered = model.strip().lower()
     slug = _MODEL_SLUG_RE.sub("-", lowered).strip("-")
@@ -727,11 +739,11 @@ def _ocr_single_page_with_retries(
     temperature: float,
     max_tokens: int,
     max_retries: int,
-) -> str:
+) -> tuple[str, ocr.OCRPageUsage]:
     last_error: Exception | None = None
     for attempt in range(max_retries):
         try:
-            return ocr._ocr_page(
+            return ocr._ocr_page_with_usage(
                 client,
                 base64_image,
                 model=model,
@@ -778,11 +790,32 @@ def _render_case_page_image(
 def _summarize_model_cases(case_results: list[dict[str, Any]]) -> dict[str, Any]:
     successful = [result for result in case_results if result["error"] is None]
 
+    billed_cases = [result for result in successful if result.get("cost_usd") is not None]
+    pages_billed = len(billed_cases)
+    prompt_tokens = sum(int(result.get("prompt_tokens", 0)) for result in billed_cases)
+    completion_tokens = sum(
+        int(result.get("completion_tokens", 0)) for result in billed_cases
+    )
+    total_tokens = sum(int(result.get("total_tokens", 0)) for result in billed_cases)
+    total_cost_usd = _safe_non_negative_float(
+        sum(float(result.get("cost_usd", 0.0)) for result in billed_cases)
+    )
+    dollars_per_1000_pages = _dollars_per_1000_pages(
+        total_cost_usd=total_cost_usd,
+        pages=pages_billed,
+    )
+
     if not successful:
         return {
             "cases_total": len(case_results),
             "cases_scored": 0,
             "cases_failed": len(case_results),
+            "pages_billed": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "total_cost_usd": 0.0,
+            "dollars_per_1000_pages": 0.0,
             "text_score": 0.0,
             "math_score": 0.0,
             "structure_score": 0.0,
@@ -793,6 +826,12 @@ def _summarize_model_cases(case_results: list[dict[str, Any]]) -> dict[str, Any]
         "cases_total": len(case_results),
         "cases_scored": len(successful),
         "cases_failed": len(case_results) - len(successful),
+        "pages_billed": pages_billed,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "total_cost_usd": total_cost_usd,
+        "dollars_per_1000_pages": dollars_per_1000_pages,
         "text_score": _safe_float(mean(result["text_score"] for result in successful)),
         "math_score": _safe_float(mean(result["math_score"] for result in successful)),
         "structure_score": _safe_float(
@@ -841,6 +880,11 @@ class BenchmarkHistoryDatabase:
                 math_score REAL,
                 structure_score REAL,
                 overall_score REAL,
+                prompt_tokens INTEGER,
+                completion_tokens INTEGER,
+                total_tokens INTEGER,
+                cost_usd REAL,
+                dollars_per_1000_pages REAL,
                 candidate_json_path TEXT,
                 gold_json_path TEXT,
                 error TEXT,
@@ -862,6 +906,12 @@ class BenchmarkHistoryDatabase:
                 math_score REAL NOT NULL,
                 structure_score REAL NOT NULL,
                 overall_score REAL NOT NULL,
+                pages_billed INTEGER NOT NULL,
+                prompt_tokens INTEGER NOT NULL,
+                completion_tokens INTEGER NOT NULL,
+                total_tokens INTEGER NOT NULL,
+                total_cost_usd REAL NOT NULL,
+                dollars_per_1000_pages REAL NOT NULL,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (run_id) REFERENCES benchmark_runs(id)
             );
@@ -870,7 +920,35 @@ class BenchmarkHistoryDatabase:
                 ON benchmark_model_summaries(run_id);
             """
         )
+        self._ensure_column("benchmark_case_results", "prompt_tokens INTEGER")
+        self._ensure_column("benchmark_case_results", "completion_tokens INTEGER")
+        self._ensure_column("benchmark_case_results", "total_tokens INTEGER")
+        self._ensure_column("benchmark_case_results", "cost_usd REAL")
+        self._ensure_column(
+            "benchmark_case_results", "dollars_per_1000_pages REAL"
+        )
+
+        self._ensure_column("benchmark_model_summaries", "pages_billed INTEGER")
+        self._ensure_column("benchmark_model_summaries", "prompt_tokens INTEGER")
+        self._ensure_column(
+            "benchmark_model_summaries", "completion_tokens INTEGER"
+        )
+        self._ensure_column("benchmark_model_summaries", "total_tokens INTEGER")
+        self._ensure_column("benchmark_model_summaries", "total_cost_usd REAL")
+        self._ensure_column(
+            "benchmark_model_summaries", "dollars_per_1000_pages REAL"
+        )
         self.connection.commit()
+
+    def _ensure_column(self, table: str, column_definition: str) -> None:
+        try:
+            self.connection.execute(
+                f"ALTER TABLE {table} ADD COLUMN {column_definition}"
+            )
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" in str(exc).lower():
+                return
+            raise
 
     def start_run(
         self,
@@ -919,11 +997,16 @@ class BenchmarkHistoryDatabase:
                 math_score,
                 structure_score,
                 overall_score,
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+                cost_usd,
+                dollars_per_1000_pages,
                 candidate_json_path,
                 gold_json_path,
                 error,
                 created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -935,6 +1018,11 @@ class BenchmarkHistoryDatabase:
                 result["math_score"],
                 result["structure_score"],
                 result["overall_score"],
+                result["prompt_tokens"],
+                result["completion_tokens"],
+                result["total_tokens"],
+                result["cost_usd"],
+                result["dollars_per_1000_pages"],
                 result["candidate_json_path"],
                 result["gold_json_path"],
                 result["error"],
@@ -962,8 +1050,14 @@ class BenchmarkHistoryDatabase:
                 math_score,
                 structure_score,
                 overall_score,
+                pages_billed,
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+                total_cost_usd,
+                dollars_per_1000_pages,
                 created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -975,6 +1069,12 @@ class BenchmarkHistoryDatabase:
                 summary["math_score"],
                 summary["structure_score"],
                 summary["overall_score"],
+                summary["pages_billed"],
+                summary["prompt_tokens"],
+                summary["completion_tokens"],
+                summary["total_tokens"],
+                summary["total_cost_usd"],
+                summary["dollars_per_1000_pages"],
                 _utc_now_iso(),
             ),
         )
@@ -1133,7 +1233,7 @@ def run_benchmark(
                         dpi=dpi,
                         fmt=fmt,
                     )
-                    markdown = _ocr_single_page_with_retries(
+                    markdown, usage = _ocr_single_page_with_retries(
                         client=client,
                         base64_image=base64_image,
                         model=model,
@@ -1172,6 +1272,18 @@ def run_benchmark(
                         "math_score": score.math_score,
                         "structure_score": score.structure_score,
                         "overall_score": score.overall_score,
+                        "prompt_tokens": usage.prompt_tokens,
+                        "completion_tokens": usage.completion_tokens,
+                        "total_tokens": usage.total_tokens,
+                        "cost_usd": usage.cost,
+                        "dollars_per_1000_pages": (
+                            _dollars_per_1000_pages(
+                                total_cost_usd=_safe_non_negative_float(usage.cost),
+                                pages=1,
+                            )
+                            if usage.cost is not None
+                            else None
+                        ),
                         "candidate_json_path": str(candidate_json_path),
                         "gold_json_path": str(gold_path),
                         "error": None,
@@ -1185,6 +1297,11 @@ def run_benchmark(
                         "math_score": 0.0,
                         "structure_score": 0.0,
                         "overall_score": 0.0,
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                        "total_tokens": 0,
+                        "cost_usd": None,
+                        "dollars_per_1000_pages": None,
                         "candidate_json_path": None,
                         "gold_json_path": str(gold_path),
                         "error": str(exc),
@@ -1202,6 +1319,8 @@ def run_benchmark(
                 f"text={summary['text_score']:.3f}, "
                 f"math={summary['math_score']:.3f}, "
                 f"structure={summary['structure_score']:.3f}, "
+                f"cost=${summary['total_cost_usd']:.6f}, "
+                f"$/1k_pages=${summary['dollars_per_1000_pages']:.2f}, "
                 f"failed={summary['cases_failed']}"
             )
 
@@ -1219,6 +1338,10 @@ def run_benchmark(
                     "model": report["model"],
                     "overall_score": report["summary"]["overall_score"],
                     "cases_failed": report["summary"]["cases_failed"],
+                    "total_cost_usd": report["summary"]["total_cost_usd"],
+                    "dollars_per_1000_pages": report["summary"][
+                        "dollars_per_1000_pages"
+                    ],
                 }
                 for report in model_reports
             ),

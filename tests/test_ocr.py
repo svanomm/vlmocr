@@ -143,6 +143,53 @@ def test_create_client_requires_openrouter_api_key(
         create_client()
 
 
+def test_extract_openrouter_usage_parses_cost_and_tokens() -> None:
+    """Usage extraction should read usage.cost and token counts from model_dump output."""
+
+    class FakeResponse:
+        def model_dump(self, mode: str = "json") -> dict[str, object]:
+            return {
+                "usage": {
+                    "prompt_tokens": 42,
+                    "completion_tokens": 8,
+                    "total_tokens": 50,
+                    "cost": "0.00123",
+                }
+            }
+
+    usage = ocr_module._extract_openrouter_usage(FakeResponse())
+
+    assert usage == ocr_module.OCRPageUsage(
+        prompt_tokens=42,
+        completion_tokens=8,
+        total_tokens=50,
+        cost=0.00123,
+    )
+
+
+def test_extract_openrouter_usage_falls_back_to_prompt_plus_completion() -> None:
+    """When total_tokens is absent, usage extraction should sum prompt and completion tokens."""
+
+    class FakeUsage:
+        def model_dump(self, mode: str = "json") -> dict[str, object]:
+            return {
+                "prompt_tokens": "30",
+                "completion_tokens": "12",
+            }
+
+    class FakeResponse:
+        usage = FakeUsage()
+
+    usage = ocr_module._extract_openrouter_usage(FakeResponse())
+
+    assert usage == ocr_module.OCRPageUsage(
+        prompt_tokens=30,
+        completion_tokens=12,
+        total_tokens=42,
+        cost=None,
+    )
+
+
 def test_convert_file_writes_raw_json_contract(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -168,6 +168,8 @@ uv run vlmocr benchmark --out-dir converted --case-limit 1
 - writes run reports to `converted/benchmark/reports`
 - stores every run, model summary, and case result in `converted/benchmark/history.db`
 - verifies `docs/benchmark` integrity before running if that folder exists
+- records OpenRouter-reported usage and cost per case (`usage.cost`) when available
+- reports per-model total benchmark cost in USD and normalized dollars per 1000 pages
 
 Because each case is one page, `--case-limit 1` is the recommended way to run cheap API validation checks.
 
