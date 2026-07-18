@@ -821,6 +821,47 @@ def test_main_dispatches_benchmark_init_command(
     assert captured["overwrite"] is True
 
 
+def test_main_dispatches_benchmark_repair_gold_escapes_with_default_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        cli.benchmark,
+        "get_default_manifest_path",
+        lambda *, out_dir: out_dir / "benchmark" / "manifest.json",
+    )
+    monkeypatch.setattr(
+        cli.benchmark,
+        "repair_gold_markdown_backslashes",
+        lambda **kwargs: captured.update(kwargs) or {"files_updated": 0},
+    )
+
+    cli.main(["benchmark-repair-gold-escapes", "--out-dir", "converted"])
+
+    assert captured["manifest_path"] == Path("converted") / "benchmark" / "manifest.json"
+
+
+def test_main_dispatches_benchmark_repair_gold_escapes_with_explicit_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        cli.benchmark,
+        "repair_gold_markdown_backslashes",
+        lambda **kwargs: captured.update(kwargs) or {"files_updated": 0},
+    )
+
+    cli.main([
+        "benchmark-repair-gold-escapes",
+        "--manifest",
+        "bench/manifest.json",
+    ])
+
+    assert captured["manifest_path"] == Path("bench/manifest.json")
+
+
 def test_main_dispatches_benchmark_command_with_defaults(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

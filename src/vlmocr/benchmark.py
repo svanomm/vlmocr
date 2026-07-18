@@ -51,6 +51,8 @@ _MATH_SEGMENT_RE = re.compile(
 _MULTI_WHITESPACE_RE = re.compile(r"\s+")
 _MODEL_SLUG_RE = re.compile(r"[^a-z0-9]+")
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
+_MARKDOWN_VALUE_KEY_RE = re.compile(r'"markdown"\s*:\s*"')
+_SINGLE_BACKSLASH_LETTER_RE = re.compile(r"(?<!\\)\\([A-Za-z])")
 
 _MATH_REPLACEMENTS = {
     "−": "-",
@@ -243,6 +245,152 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+def _find_json_string_end(text: str, opening_quote_index: int) -> int:
+    if opening_quote_index < 0 or opening_quote_index >= len(text):
+        raise ValueError("Opening quote index is out of range.")
+    if text[opening_quote_index] != '"':
+        raise ValueError("Opening quote index must point to a double quote character.")
+
+    escaped = False
+    for index in range(opening_quote_index + 1, len(text)):
+        char = text[index]
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if char == '"':
+            return index
+
+    raise ValueError("Unterminated JSON string while repairing markdown escapes.")
+
+
+def _escape_single_backslash_letter_not_n(markdown_value: str) -> tuple[str, int]:
+    replacements = 0
+
+    def _replace(match: re.Match[str]) -> str:
+        nonlocal replacements
+        letter = match.group(1)
+        if letter == "n":
+            return match.group(0)
+        replacements += 1
+        return "\\\\" + letter
+
+    repaired = _SINGLE_BACKSLASH_LETTER_RE.sub(_replace, markdown_value)
+    return repaired, replacements
+
+
+def _repair_markdown_sections(json_text: str) -> tuple[str, int, int]:
+    rebuilt: list[str] = []
+    cursor = 0
+    section_count = 0
+    replacement_count = 0
+
+    while True:
+        match = _MARKDOWN_VALUE_KEY_RE.search(json_text, cursor)
+        if match is None:
+            rebuilt.append(json_text[cursor:])
+            break
+
+        opening_quote_index = match.end() - 1
+        closing_quote_index = _find_json_string_end(json_text, opening_quote_index)
+
+        raw_markdown = json_text[opening_quote_index + 1 : closing_quote_index]
+        repaired_markdown, replacements = _escape_single_backslash_letter_not_n(
+            raw_markdown
+        )
+
+        section_count += 1
+        replacement_count += replacements
+
+        rebuilt.append(json_text[cursor : opening_quote_index + 1])
+        rebuilt.append(repaired_markdown)
+        cursor = closing_quote_index
+
+    return "".join(rebuilt), section_count, replacement_count
+
+
+def repair_gold_markdown_backslashes(
+    *,
+    manifest_path: Path,
+    output_fn: OutputFunc = print,
+) -> dict[str, int]:
+    """Repair single-backslash letter escapes in gold markdown JSON values.
+
+    This only modifies `markdown` string values and skips sequences that start with
+    `\n`, allowing manual follow-up for LaTeX commands that begin with `n`.
+    """
+    resolved_manifest_path = Path(manifest_path)
+    manifest = load_manifest(resolved_manifest_path)
+
+    files_scanned = 0
+    files_updated = 0
+    files_skipped_no_markdown = 0
+    files_remaining_invalid = 0
+    markdown_sections = 0
+    replacements = 0
+
+    for case in manifest.cases:
+        gold_path = (resolved_manifest_path.parent / case.gold_json).resolve()
+        if not gold_path.exists():
+            raise FileNotFoundError(f"Benchmark gold JSON not found: {gold_path}")
+
+        original_text = gold_path.read_text(encoding="utf-8")
+        repaired_text, section_count, replacement_count = _repair_markdown_sections(
+            original_text
+        )
+
+        files_scanned += 1
+
+        if section_count == 0:
+            files_skipped_no_markdown += 1
+            output_fn(
+                "Skipped benchmark gold escape repair (no markdown field): "
+                f"{gold_path}"
+            )
+            continue
+
+        markdown_sections += section_count
+        replacements += replacement_count
+
+        if repaired_text != original_text:
+            gold_path.write_text(repaired_text, encoding="utf-8")
+            files_updated += 1
+
+        try:
+            validate_raw_ocr_document(json.loads(gold_path.read_text(encoding="utf-8")))
+        except json.JSONDecodeError as exc:
+            files_remaining_invalid += 1
+            output_fn(
+                "Benchmark gold JSON remains invalid after escape repair: "
+                f"{gold_path} (line {exc.lineno}, column {exc.colno})"
+            )
+        except ValueError as exc:
+            files_remaining_invalid += 1
+            output_fn(
+                "Benchmark gold JSON failed contract validation after escape repair: "
+                f"{gold_path} ({exc})"
+            )
+
+    summary = {
+        "files_scanned": files_scanned,
+        "files_updated": files_updated,
+        "files_skipped_no_markdown": files_skipped_no_markdown,
+        "files_remaining_invalid": files_remaining_invalid,
+        "markdown_sections": markdown_sections,
+        "replacements": replacements,
+    }
+    output_fn(
+        "Repaired benchmark gold markdown escapes: "
+        f"{files_updated} updated files, {replacements} replacements across "
+        f"{markdown_sections} markdown sections; "
+        f"{files_skipped_no_markdown} files skipped (no markdown key); "
+        f"{files_remaining_invalid} files still invalid."
+    )
+    return summary
 
 
 def load_manifest(manifest_path: Path) -> BenchmarkManifest:

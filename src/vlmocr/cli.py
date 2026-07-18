@@ -305,6 +305,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="Overwrite existing benchmark manifest and gold pages.",
     )
 
+    benchmark_repair_parser = subparsers.add_parser(
+        "benchmark-repair-gold-escapes",
+        help=(
+            "Repair single-backslash LaTeX-style escapes in benchmark gold markdown "
+            "(leaves \\n sequences unchanged)."
+        ),
+    )
+    benchmark_repair_parser.add_argument(
+        "--manifest",
+        type=Path,
+        default=None,
+        help="Benchmark manifest path. Defaults to <out-dir>/benchmark/academic-textbook-v1/manifest.json.",
+    )
+    benchmark_repair_parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=DEFAULT_OUT_DIR,
+        help="Used to resolve default manifest path when --manifest is omitted.",
+    )
+
     benchmark_parser = subparsers.add_parser(
         "benchmark",
         help="Run deterministic one-page benchmark cases for one or more models.",
@@ -586,6 +606,14 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> N
                 raw_dir=args.raw_dir,
                 manifest_path=args.manifest,
                 overwrite=args.overwrite,
+            )
+            return
+
+        if args.command == "benchmark-repair-gold-escapes":
+            benchmark.repair_gold_markdown_backslashes(
+                manifest_path=args.manifest or benchmark.get_default_manifest_path(
+                    out_dir=args.out_dir
+                ),
             )
             return
 

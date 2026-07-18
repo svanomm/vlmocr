@@ -145,6 +145,170 @@ def test_verify_benchmark_gold_for_pdf_folder_detects_missing_gold(
         )
 
 
+def test_repair_gold_markdown_backslashes_escapes_non_n_sequences(
+    tmp_path: Path,
+) -> None:
+    manifest_root = tmp_path / "bench"
+    gold_dir = manifest_root / "gold"
+    gold_dir.mkdir(parents=True)
+
+    manifest_payload = {
+        "name": "test-benchmark",
+        "version": "1.0",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "cases": [
+            {
+                "id": "case1",
+                "document": "benchmark/case1.pdf",
+                "page": 1,
+                "gold_json": "gold/case1.json",
+                "tags": [],
+                "note": "escape repair",
+            }
+        ],
+    }
+    manifest_path = manifest_root / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest_payload), encoding="utf-8")
+
+    broken_gold = r'''{
+  "settings_hash": "seed-hash",
+  "pages": [
+    {
+      "index": 0,
+      "markdown": "Line one\nLine two with \hat{x} and \text{abc} and \neq and \\alpha."
+    }
+  ]
+}
+'''
+    gold_path = gold_dir / "case1.json"
+    gold_path.write_text(broken_gold, encoding="utf-8")
+
+    summary = benchmark.repair_gold_markdown_backslashes(
+        manifest_path=manifest_path,
+        output_fn=lambda message: None,
+    )
+
+    fixed_text = gold_path.read_text(encoding="utf-8")
+
+    assert summary["files_scanned"] == 1
+    assert summary["files_updated"] == 1
+    assert summary["files_remaining_invalid"] == 0
+    assert summary["markdown_sections"] == 1
+    assert summary["replacements"] == 2
+    assert r"\\hat{x}" in fixed_text
+    assert r"\\text{abc}" in fixed_text
+    assert r"\neq" in fixed_text
+    assert r"\n" in fixed_text
+    assert r"\\alpha" in fixed_text
+
+    parsed_payload = validate_raw_ocr_document(json.loads(fixed_text))
+    assert parsed_payload["pages"][0]["index"] == 0
+
+
+def test_repair_gold_markdown_backslashes_skips_missing_markdown_field(
+    tmp_path: Path,
+) -> None:
+    manifest_root = tmp_path / "bench"
+    gold_dir = manifest_root / "gold"
+    gold_dir.mkdir(parents=True)
+
+    manifest_payload = {
+        "name": "test-benchmark",
+        "version": "1.0",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "cases": [
+            {
+                "id": "case1",
+                "document": "benchmark/case1.pdf",
+                "page": 1,
+                "gold_json": "gold/case1.json",
+                "tags": [],
+                "note": "missing markdown key",
+            }
+        ],
+    }
+    manifest_path = manifest_root / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest_payload), encoding="utf-8")
+
+    malformed_payload = r'''{
+  "settings_hash": "seed-hash",
+  "pages": [
+    {
+      "index": 0,
+      "content": "\\hat{x}"
+    }
+  ]
+}
+'''
+    gold_path = gold_dir / "case1.json"
+    gold_path.write_text(malformed_payload, encoding="utf-8")
+
+    summary = benchmark.repair_gold_markdown_backslashes(
+        manifest_path=manifest_path,
+        output_fn=lambda message: None,
+    )
+
+    assert summary["files_scanned"] == 1
+    assert summary["files_updated"] == 0
+    assert summary["files_skipped_no_markdown"] == 1
+    assert summary["files_remaining_invalid"] == 0
+    assert summary["markdown_sections"] == 0
+    assert summary["replacements"] == 0
+    assert gold_path.read_text(encoding="utf-8") == malformed_payload
+
+
+def test_repair_gold_markdown_backslashes_reports_remaining_invalid_files(
+    tmp_path: Path,
+) -> None:
+    manifest_root = tmp_path / "bench"
+    gold_dir = manifest_root / "gold"
+    gold_dir.mkdir(parents=True)
+
+    manifest_payload = {
+        "name": "test-benchmark",
+        "version": "1.0",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "cases": [
+            {
+                "id": "case1",
+                "document": "benchmark/case1.pdf",
+                "page": 1,
+                "gold_json": "gold/case1.json",
+                "tags": [],
+                "note": "contains non-letter invalid escape",
+            }
+        ],
+    }
+    manifest_path = manifest_root / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest_payload), encoding="utf-8")
+
+    invalid_gold = r'''{
+  "settings_hash": "seed-hash",
+  "pages": [
+    {
+      "index": 0,
+      "markdown": "A markdown table escape: \| should remain for manual fix."
+    }
+  ]
+}
+'''
+    gold_path = gold_dir / "case1.json"
+    gold_path.write_text(invalid_gold, encoding="utf-8")
+
+    summary = benchmark.repair_gold_markdown_backslashes(
+        manifest_path=manifest_path,
+        output_fn=lambda message: None,
+    )
+
+    assert summary["files_scanned"] == 1
+    assert summary["files_updated"] == 0
+    assert summary["files_skipped_no_markdown"] == 0
+    assert summary["files_remaining_invalid"] == 1
+    assert summary["markdown_sections"] == 1
+    assert summary["replacements"] == 0
+    assert gold_path.read_text(encoding="utf-8") == invalid_gold
+
+
 def test_benchmark_history_database_records_incremental_results(
     tmp_path: Path,
 ) -> None:
