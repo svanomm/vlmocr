@@ -1763,69 +1763,91 @@ def rescore_benchmark_reports(
     reports_rescored = 0
     models_rescored = 0
     cases_rescored = 0
+    failed_reports: list[dict[str, str]] = []
 
     try:
         for report_path in reports:
             resolved_report = Path(report_path)
-            report_payload = _read_json(resolved_report)
-            models_payload = report_payload.get("models")
-            if not isinstance(models_payload, list) or not models_payload:
-                raise ValueError(
-                    f"Benchmark report is missing model results: {resolved_report}"
-                )
-
-            updated_models: list[dict[str, Any]] = []
-            for model_payload in models_payload:
-                model_name = str(model_payload.get("model", "")).strip()
-                if not model_name:
+            try:
+                report_payload = _read_json(resolved_report)
+                models_payload = report_payload.get("models")
+                if not isinstance(models_payload, list) or not models_payload:
                     raise ValueError(
-                        f"Benchmark report contains a model entry without a model name: {resolved_report}"
+                        f"Benchmark report is missing model results: {resolved_report}"
                     )
 
-                existing_cases = model_payload.get("cases")
-                if not isinstance(existing_cases, list):
-                    raise ValueError(
-                        f"Benchmark report model '{model_name}' is missing case results: {resolved_report}"
-                    )
+                updated_models: list[dict[str, Any]] = []
+                pending_db_updates: list[tuple[str, list[dict[str, Any]], dict[str, Any]]] = []
+                for model_payload in models_payload:
+                    model_name = str(model_payload.get("model", "")).strip()
+                    if not model_name:
+                        raise ValueError(
+                            f"Benchmark report contains a model entry without a model name: {resolved_report}"
+                        )
 
-                rescored_case_results = [
-                    _rescore_case_result(report_path=resolved_report, result=result)
-                    for result in existing_cases
-                ]
-                summary = _summarize_model_cases(rescored_case_results)
-                updated_models.append(
-                    {
-                        "model": model_name,
-                        "summary": summary,
-                        "cases": rescored_case_results,
-                    }
-                )
+                    existing_cases = model_payload.get("cases")
+                    if not isinstance(existing_cases, list):
+                        raise ValueError(
+                            f"Benchmark report model '{model_name}' is missing case results: {resolved_report}"
+                        )
+
+                    rescored_case_results = [
+                        _rescore_case_result(report_path=resolved_report, result=result)
+                        for result in existing_cases
+                    ]
+                    summary = _summarize_model_cases(rescored_case_results)
+                    updated_models.append(
+                        {
+                            "model": model_name,
+                            "summary": summary,
+                            "cases": rescored_case_results,
+                        }
+                    )
+                    pending_db_updates.append(
+                        (model_name, rescored_case_results, summary)
+                    )
 
                 if db is not None and isinstance(report_payload.get("run_id"), int):
-                    db.replace_model_results(
-                        run_id=int(report_payload["run_id"]),
-                        model=model_name,
-                        case_results=rescored_case_results,
-                        summary=summary,
-                    )
+                    for model_name, rescored_case_results, summary in pending_db_updates:
+                        db.replace_model_results(
+                            run_id=int(report_payload["run_id"]),
+                            model=model_name,
+                            case_results=rescored_case_results,
+                            summary=summary,
+                        )
 
-                models_rescored += 1
-                cases_rescored += len(rescored_case_results)
+                report_payload["models"] = updated_models
+                report_payload["ranking"] = _build_ranking(updated_models)
+                report_payload["scoring"] = _build_scoring_metadata()
+                report_payload["rescored_at"] = _utc_now_iso()
+                _write_json(resolved_report, report_payload)
 
-            report_payload["models"] = updated_models
-            report_payload["ranking"] = _build_ranking(updated_models)
-            report_payload["scoring"] = _build_scoring_metadata()
-            report_payload["rescored_at"] = _utc_now_iso()
-            _write_json(resolved_report, report_payload)
+                reports_rescored += 1
+                models_rescored += len(updated_models)
+                cases_rescored += sum(
+                    len(model_report["cases"]) for model_report in updated_models
+                )
+                output_fn(f"Rescored benchmark report: {resolved_report}")
+            except Exception as exc:
+                failed_reports.append(
+                    {
+                        "report": str(resolved_report),
+                        "error": str(exc),
+                    }
+                )
+                output_fn(f"Skipped benchmark report: {resolved_report} ({exc})")
 
-            reports_rescored += 1
-            output_fn(f"Rescored benchmark report: {resolved_report}")
+        if reports_rescored == 0 and failed_reports:
+            raise ValueError(
+                f"No benchmark reports could be rescored in {resolved_reports_dir}"
+            )
 
         return {
             "reports_rescored": reports_rescored,
             "models_rescored": models_rescored,
             "cases_rescored": cases_rescored,
             "database_updated": resolved_database is not None,
+            "failed_reports": failed_reports,
             "reports": [str(Path(path)) for path in reports],
         }
     finally:
