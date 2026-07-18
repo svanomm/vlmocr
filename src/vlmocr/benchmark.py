@@ -41,6 +41,11 @@ _BENCHMARK_DOCS_SUBPATH = Path("benchmark")
 OVERALL_TEXT_WEIGHT = 0.45
 OVERALL_MATH_WEIGHT = 0.40
 OVERALL_STRUCTURE_WEIGHT = 0.15
+_CONTENT_WEIGHT_DENOMINATOR = OVERALL_TEXT_WEIGHT + OVERALL_MATH_WEIGHT
+CONTENT_TEXT_WEIGHT = OVERALL_TEXT_WEIGHT / _CONTENT_WEIGHT_DENOMINATOR
+CONTENT_MATH_WEIGHT = OVERALL_MATH_WEIGHT / _CONTENT_WEIGHT_DENOMINATOR
+_TEXT_FORMATTING_GAIN_THRESHOLD = 0.03
+_CONTRACT_PENALTY_THRESHOLD = 0.05
 
 _DISPLAY_MATH_RE = re.compile(r"\$\$(.+?)\$\$", re.DOTALL)
 _INLINE_MATH_RE = re.compile(r"(?<!\$)\$(?!\$)(.+?)(?<!\$)\$(?!\$)", re.DOTALL)
@@ -53,6 +58,24 @@ _MODEL_SLUG_RE = re.compile(r"[^a-z0-9]+")
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 _MARKDOWN_VALUE_KEY_RE = re.compile(r'"markdown"\s*:\s*"')
 _SINGLE_BACKSLASH_LETTER_RE = re.compile(r"(?<!\\)\\([A-Za-z])")
+_MARKDOWN_FENCE_RE = re.compile(r"```+")
+_MARKDOWN_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s*", re.MULTILINE)
+_MARKDOWN_LIST_MARKER_RE = re.compile(r"^\s*[-+*•]\s+", re.MULTILINE)
+_MARKDOWN_TABLE_SEPARATOR_RE = re.compile(
+    r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$",
+    re.MULTILINE,
+)
+_MARKDOWN_EMPHASIS_RE = re.compile(r"(\*{1,3}|_{1,3})([^*_]+?)\1")
+_REF_TAG_RE = re.compile(r"<ref\b[^>]*/>")
+_NOTE_TAG_RE = re.compile(r"</?note\b[^>]*>")
+_NON_MATH_SEGMENT_RE = re.compile(r"^[\[\],.\sA-Za-z]+$")
+_MATH_COMMAND_SIGNAL_RE = re.compile(
+    r"\\(?:"
+    r"alpha|beta|gamma|delta|epsilon|varepsilon|theta|lambda|mu|pi|sigma|phi|psi|omega|"
+    r"hat|bar|overline|frac|sum|prod|int|sqrt|log|ln|exp|max|min|Pr|mid|left|right|"
+    r"leq|geq|neq|infty|cdot|times|text|operatorname|mathrm"
+    r")\b"
+)
 
 _MATH_REPLACEMENTS = {
     "−": "-",
@@ -67,6 +90,13 @@ _MATH_REPLACEMENTS = {
     "≥": r"\\geq",
     "≠": r"\\neq",
 }
+_MATH_ALIAS_PATTERNS = (
+    (re.compile(r"\\ge\b"), r"\\geq"),
+    (re.compile(r"\\le\b"), r"\\leq"),
+    (re.compile(r"\\operatorname\{Pr\}"), r"\\Pr"),
+    (re.compile(r"\\text\{Pr\}"), r"\\Pr"),
+    (re.compile(r"\\mathrm\{Pr\}"), r"\\Pr"),
+)
 
 ACADEMIC_BENCHMARK_PRESET: tuple[dict[str, Any], ...] = (
     {
@@ -165,13 +195,30 @@ class BenchmarkManifest:
 
 
 @dataclass(frozen=True)
+class ScoreAudit:
+    """Diagnostics for score loss caused by presentation or contract differences."""
+
+    strict_text_score: float
+    text_formatting_gain: float
+    ignored_gold_non_math_segments: int
+    ignored_candidate_non_math_segments: int
+    contract_penalty: float
+    suspected_formatting_bias: bool
+    flags: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class CaseScore:
     """Deterministic component scores for one case."""
 
     text_score: float
     math_score: float
     structure_score: float
+    content_score: float
+    contract_score: float
+    legacy_overall_score: float
     overall_score: float
+    audit: ScoreAudit
 
 
 def _utc_now_iso() -> str:
@@ -700,8 +747,86 @@ def _normalize_text(text: str) -> str:
     return normalized.strip()
 
 
+def _strip_markdown_emphasis(text: str) -> str:
+    previous = ""
+    current = text
+    while current != previous:
+        previous = current
+        current = _MARKDOWN_EMPHASIS_RE.sub(lambda match: match.group(2), current)
+    return current
+
+
+def _normalize_text_for_content_scoring(text: str) -> str:
+    normalized = _MARKDOWN_FENCE_RE.sub(" ", text)
+    normalized = normalized.replace("\\|", " ")
+    normalized = _MARKDOWN_TABLE_SEPARATOR_RE.sub(" ", normalized)
+    normalized = _REF_TAG_RE.sub(" ", normalized)
+    normalized = _NOTE_TAG_RE.sub(" ", normalized)
+    normalized = normalized.replace("<image>", " ")
+    normalized = _MARKDOWN_HEADING_RE.sub("", normalized)
+    normalized = _MARKDOWN_LIST_MARKER_RE.sub("", normalized)
+    normalized = normalized.replace("`", "")
+    normalized = normalized.replace("|", " ")
+    normalized = _strip_markdown_emphasis(normalized)
+    normalized = _MULTI_WHITESPACE_RE.sub(" ", normalized)
+    return normalized.strip()
+
+
+def _score_text_pair(gold_text: str, candidate_text: str) -> float:
+    text_similarity = _char_similarity(gold_text, candidate_text)
+    token_similarity = _token_f1(_tokenize(gold_text), _tokenize(candidate_text))
+    return _safe_float((text_similarity + token_similarity) / 2)
+
+
+def _is_substantive_math_segment(expr: str) -> bool:
+    stripped = expr.strip()
+    if not stripped:
+        return False
+
+    if _NON_MATH_SEGMENT_RE.fullmatch(stripped):
+        return False
+
+    if _MATH_COMMAND_SIGNAL_RE.search(stripped):
+        return True
+
+    if re.search(r"[0-9^_=<>]", stripped):
+        return True
+
+    if re.search(r"\\[A-Za-z]+", stripped):
+        return True
+
+    return any(symbol in stripped for symbol in ("(", ")", "{", "}", "/", "*"))
+
+
+def _strip_substantive_math_segments(text: str) -> tuple[str, int]:
+    rebuilt: list[str] = []
+    cursor = 0
+    ignored_segments = 0
+
+    for match in _MATH_SEGMENT_RE.finditer(text):
+        rebuilt.append(text[cursor : match.start()])
+
+        body = match.group(1) if match.group(1) is not None else match.group(2)
+        if body is None:
+            cursor = match.end()
+            continue
+
+        canonical_body = _canonicalize_math(body)
+        if _is_substantive_math_segment(canonical_body):
+            rebuilt.append(" ")
+        else:
+            rebuilt.append(_normalize_text(body))
+            ignored_segments += 1
+
+        cursor = match.end()
+
+    rebuilt.append(text[cursor:])
+    return _normalize_text("".join(rebuilt)), ignored_segments
+
+
 def _strip_math_segments(text: str) -> str:
-    return _MATH_SEGMENT_RE.sub(" ", text)
+    stripped, _ = _strip_substantive_math_segments(text)
+    return stripped
 
 
 def _tokenize(text: str) -> list[str]:
@@ -758,9 +883,13 @@ def _canonicalize_math(expr: str) -> str:
     canonical = expr.strip()
     for source, target in _MATH_REPLACEMENTS.items():
         canonical = canonical.replace(source, target)
+    for pattern, replacement in _MATH_ALIAS_PATTERNS:
+        canonical = pattern.sub(replacement, canonical)
 
     canonical = canonical.replace(r"\left", "")
     canonical = canonical.replace(r"\right", "")
+    for spacing_command in (r"\,", r"\;", r"\:", r"\!", r"\quad", r"\qquad"):
+        canonical = canonical.replace(spacing_command, "")
     canonical = canonical.replace("\n", " ")
     canonical = _MULTI_WHITESPACE_RE.sub("", canonical)
     return canonical
@@ -772,7 +901,10 @@ def _extract_math_segments(text: str) -> list[str]:
         body = match.group(1) if match.group(1) is not None else match.group(2)
         if body is None:
             continue
-        segments.append(_canonicalize_math(body))
+        canonical_body = _canonicalize_math(body)
+        if not _is_substantive_math_segment(canonical_body):
+            continue
+        segments.append(canonical_body)
     return segments
 
 
@@ -849,27 +981,63 @@ def score_markdown_pair(gold_markdown: str, candidate_markdown: str) -> CaseScor
     normalized_gold = _normalize_text(gold_markdown)
     normalized_candidate = _normalize_text(candidate_markdown)
 
-    text_gold = _strip_math_segments(normalized_gold)
-    text_candidate = _strip_math_segments(normalized_candidate)
+    strict_text_gold, ignored_gold_non_math_segments = _strip_substantive_math_segments(
+        normalized_gold
+    )
+    strict_text_candidate, ignored_candidate_non_math_segments = (
+        _strip_substantive_math_segments(normalized_candidate)
+    )
 
-    text_similarity = _char_similarity(text_gold, text_candidate)
-    token_similarity = _token_f1(_tokenize(text_gold), _tokenize(text_candidate))
-    text_score = _safe_float((text_similarity + token_similarity) / 2)
+    strict_text_score = _score_text_pair(strict_text_gold, strict_text_candidate)
+
+    text_gold = _normalize_text_for_content_scoring(strict_text_gold)
+    text_candidate = _normalize_text_for_content_scoring(strict_text_candidate)
+
+    text_score = _score_text_pair(text_gold, text_candidate)
 
     math_score = _math_score(normalized_gold, normalized_candidate)
     structure_score = _structure_score(normalized_gold, normalized_candidate)
-
-    overall_score = _safe_float(
+    content_score = _safe_float(
+        (CONTENT_TEXT_WEIGHT * text_score) + (CONTENT_MATH_WEIGHT * math_score)
+    )
+    contract_score = structure_score
+    legacy_overall_score = _safe_float(
         (OVERALL_TEXT_WEIGHT * text_score)
         + (OVERALL_MATH_WEIGHT * math_score)
-        + (OVERALL_STRUCTURE_WEIGHT * structure_score)
+        + (OVERALL_STRUCTURE_WEIGHT * contract_score)
     )
+    text_formatting_gain = _safe_float(max(0.0, text_score - strict_text_score))
+    contract_penalty = _safe_float(max(0.0, content_score - legacy_overall_score))
+
+    flags: list[str] = []
+    if text_formatting_gain >= _TEXT_FORMATTING_GAIN_THRESHOLD:
+        flags.append("markdown_presentation_difference")
+    if ignored_gold_non_math_segments or ignored_candidate_non_math_segments:
+        flags.append("inline_syntax_wrapped_as_math")
+    if contract_penalty >= _CONTRACT_PENALTY_THRESHOLD:
+        flags.append("contract_markup_difference")
+
+    audit = ScoreAudit(
+        strict_text_score=strict_text_score,
+        text_formatting_gain=text_formatting_gain,
+        ignored_gold_non_math_segments=ignored_gold_non_math_segments,
+        ignored_candidate_non_math_segments=ignored_candidate_non_math_segments,
+        contract_penalty=contract_penalty,
+        suspected_formatting_bias=bool(flags),
+        flags=tuple(flags),
+    )
+
+    overall_score = content_score
 
     return CaseScore(
         text_score=text_score,
         math_score=math_score,
         structure_score=structure_score,
+        content_score=content_score,
+        contract_score=contract_score,
+        legacy_overall_score=legacy_overall_score,
         overall_score=overall_score,
+        audit=audit,
     )
 
 
@@ -967,7 +1135,13 @@ def _summarize_model_cases(case_results: list[dict[str, Any]]) -> dict[str, Any]
             "text_score": 0.0,
             "math_score": 0.0,
             "structure_score": 0.0,
+            "content_score": 0.0,
+            "contract_score": 0.0,
+            "legacy_overall_score": 0.0,
             "overall_score": 0.0,
+            "formatting_bias_cases": 0,
+            "average_text_formatting_gain": 0.0,
+            "average_contract_penalty": 0.0,
         }
 
     return {
@@ -985,10 +1159,53 @@ def _summarize_model_cases(case_results: list[dict[str, Any]]) -> dict[str, Any]
         "structure_score": _safe_float(
             mean(result["structure_score"] for result in successful)
         ),
+        "content_score": _safe_float(
+            mean(result["content_score"] for result in successful)
+        ),
+        "contract_score": _safe_float(
+            mean(result["contract_score"] for result in successful)
+        ),
+        "legacy_overall_score": _safe_float(
+            mean(result["legacy_overall_score"] for result in successful)
+        ),
         "overall_score": _safe_float(
             mean(result["overall_score"] for result in successful)
         ),
+        "formatting_bias_cases": sum(
+            1
+            for result in successful
+            if result.get("score_audit", {}).get("suspected_formatting_bias")
+        ),
+        "average_text_formatting_gain": _safe_float(
+            mean(
+                float(result.get("score_audit", {}).get("text_formatting_gain", 0.0))
+                for result in successful
+            )
+        ),
+        "average_contract_penalty": _safe_float(
+            mean(
+                float(result.get("score_audit", {}).get("contract_penalty", 0.0))
+                for result in successful
+            )
+        ),
     }
+
+
+def _render_progress_line(
+    *,
+    completed_pages: int,
+    total_pages: int,
+    model: str,
+    case_id: str,
+) -> str:
+    remaining_pages = max(0, total_pages - completed_pages)
+    dots = "." * completed_pages
+    spaces = " " * remaining_pages
+    return (
+        f"Progress [{dots}{spaces}] "
+        f"{completed_pages}/{total_pages} pages completed "
+        f"({model}: {case_id})"
+    )
 
 
 class BenchmarkHistoryDatabase:
@@ -1368,6 +1585,8 @@ def run_benchmark(
     db = BenchmarkHistoryDatabase(resolved_database)
     run_id: int | None = None
     report_path: Path | None = None
+    total_pages = len(selected_models) * len(selected_cases)
+    completed_pages = 0
 
     try:
         run_id = db.start_run(
@@ -1395,6 +1614,9 @@ def run_benchmark(
         )
 
         model_reports: list[dict[str, Any]] = []
+        output_fn(
+            f"Benchmark progress: [{' ' * total_pages}] 0/{total_pages} pages completed"
+        )
 
         for model in selected_models:
             output_fn(f"Benchmarking model: {model}")
@@ -1462,7 +1684,25 @@ def run_benchmark(
                         "text_score": score.text_score,
                         "math_score": score.math_score,
                         "structure_score": score.structure_score,
+                        "content_score": score.content_score,
+                        "contract_score": score.contract_score,
+                        "legacy_overall_score": score.legacy_overall_score,
                         "overall_score": score.overall_score,
+                        "score_audit": {
+                            "strict_text_score": score.audit.strict_text_score,
+                            "text_formatting_gain": score.audit.text_formatting_gain,
+                            "ignored_gold_non_math_segments": (
+                                score.audit.ignored_gold_non_math_segments
+                            ),
+                            "ignored_candidate_non_math_segments": (
+                                score.audit.ignored_candidate_non_math_segments
+                            ),
+                            "contract_penalty": score.audit.contract_penalty,
+                            "suspected_formatting_bias": (
+                                score.audit.suspected_formatting_bias
+                            ),
+                            "flags": list(score.audit.flags),
+                        },
                         "prompt_tokens": usage.prompt_tokens,
                         "completion_tokens": usage.completion_tokens,
                         "total_tokens": usage.total_tokens,
@@ -1487,7 +1727,19 @@ def run_benchmark(
                         "text_score": 0.0,
                         "math_score": 0.0,
                         "structure_score": 0.0,
+                        "content_score": 0.0,
+                        "contract_score": 0.0,
+                        "legacy_overall_score": 0.0,
                         "overall_score": 0.0,
+                        "score_audit": {
+                            "strict_text_score": 0.0,
+                            "text_formatting_gain": 0.0,
+                            "ignored_gold_non_math_segments": 0,
+                            "ignored_candidate_non_math_segments": 0,
+                            "contract_penalty": 0.0,
+                            "suspected_formatting_bias": False,
+                            "flags": [],
+                        },
                         "prompt_tokens": 0,
                         "completion_tokens": 0,
                         "total_tokens": 0,
@@ -1500,6 +1752,15 @@ def run_benchmark(
 
                 db.record_case_result(run_id=run_id, model=model, result=result)
                 case_results.append(result)
+                completed_pages += 1
+                output_fn(
+                    _render_progress_line(
+                        completed_pages=completed_pages,
+                        total_pages=total_pages,
+                        model=model,
+                        case_id=case.case_id,
+                    )
+                )
 
             summary = _summarize_model_cases(case_results)
             db.record_model_summary(run_id=run_id, model=model, summary=summary)
@@ -1509,7 +1770,9 @@ def run_benchmark(
                 f"overall={summary['overall_score']:.3f}, "
                 f"text={summary['text_score']:.3f}, "
                 f"math={summary['math_score']:.3f}, "
-                f"structure={summary['structure_score']:.3f}, "
+                f"contract={summary['contract_score']:.3f}, "
+                f"legacy={summary['legacy_overall_score']:.3f}, "
+                f"formatting_bias_cases={summary['formatting_bias_cases']}, "
                 f"cost=${summary['total_cost_usd']:.6f}, "
                 f"$/1k_pages=${summary['dollars_per_1000_pages']:.2f}, "
                 f"failed={summary['cases_failed']}"
@@ -1543,6 +1806,24 @@ def run_benchmark(
         report_payload = {
             "run_id": run_id,
             "created_at": _utc_now_iso(),
+            "scoring": {
+                "version": 2,
+                "overall_score": "content_score",
+                "content_weights": {
+                    "text": CONTENT_TEXT_WEIGHT,
+                    "math": CONTENT_MATH_WEIGHT,
+                },
+                "legacy_overall_weights": {
+                    "text": OVERALL_TEXT_WEIGHT,
+                    "math": OVERALL_MATH_WEIGHT,
+                    "contract": OVERALL_STRUCTURE_WEIGHT,
+                },
+                "notes": [
+                    "overall_score excludes contract markup differences",
+                    "contract_score reports gold-format fidelity separately",
+                    "score_audit flags likely formatting-driven disagreements",
+                ],
+            },
             "manifest": {
                 "path": str(manifest_path),
                 "name": manifest.name,

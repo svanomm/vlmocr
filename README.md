@@ -162,7 +162,7 @@ uv run vlmocr benchmark --out-dir converted --model google/gemini-3.1-flash-lite
 
 - renders exactly one page per benchmark case
 - calls the selected model(s) on those pages
-- scores candidate raw markdown against gold using deterministic text/math/structure metrics
+- scores candidate raw markdown against gold using deterministic content metrics, separate contract markup metrics, and per-case formatting-bias audit flags
 - writes run reports to `converted/benchmark/reports`
 - stores every run, model summary, and case result in `converted/benchmark/history.db`
 - prints the 10 most recent benchmark model summaries after each benchmark run

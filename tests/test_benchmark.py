@@ -50,6 +50,35 @@ def test_score_markdown_pair_penalizes_math_errors() -> None:
     assert score.overall_score < 1.0
 
 
+def test_score_markdown_pair_normalizes_formatting_and_math_aliases() -> None:
+    gold = """## Syntax\n\n`predict` $[type]$ *newvar* where $a \\geq .$\n"""
+    candidate = """Syntax\n\npredict [type] newvar where $a \\ge .$\n"""
+
+    score = benchmark.score_markdown_pair(gold, candidate)
+
+    assert score.text_score > 0.95
+    assert score.math_score == pytest.approx(1.0)
+    assert score.contract_score < score.content_score
+    assert score.overall_score == pytest.approx(score.content_score)
+    assert score.overall_score > score.legacy_overall_score
+    assert score.audit.suspected_formatting_bias is True
+    assert "inline_syntax_wrapped_as_math" in score.audit.flags
+
+
+def test_score_markdown_pair_separates_contract_markup_from_content() -> None:
+    gold = """# Result\n\nBody<ref num=\"1\"/>\n\n<note num=\"1\">Source note</note>\n"""
+    candidate = """Result\n\nBody\n\nSource note\n"""
+
+    score = benchmark.score_markdown_pair(gold, candidate)
+
+    assert score.text_score == pytest.approx(1.0)
+    assert score.overall_score == pytest.approx(1.0)
+    assert score.contract_score < 1.0
+    assert score.overall_score > score.legacy_overall_score
+    assert score.audit.suspected_formatting_bias is True
+    assert "contract_markup_difference" in score.audit.flags
+
+
 def test_initialize_academic_benchmark_creates_one_page_gold(
     tmp_path: Path,
 ) -> None:
@@ -552,29 +581,44 @@ def test_run_benchmark_writes_report_and_history(
     monkeypatch.setattr(benchmark.ocr, "_ocr_page_with_usage", fake_ocr_page_with_usage)
 
     out_dir = tmp_path / "converted"
+    output_lines: list[str] = []
     report = benchmark.run_benchmark(
         manifest_path=manifest_path,
         docs_dir=docs_dir,
         out_dir=out_dir,
         models=["model-a", "model-b"],
         case_limit=1,
-        output_fn=lambda message: None,
+        output_fn=output_lines.append,
     )
 
     assert report["manifest"]["case_count"] == 1
+    assert report["scoring"]["overall_score"] == "content_score"
     assert len(report["models"]) == 2
     assert report["ranking"][0]["model"] == "model-a"
     model_summaries = {
         model_report["model"]: model_report["summary"] for model_report in report["models"]
     }
+    assert model_summaries["model-a"]["contract_score"] == pytest.approx(1.0)
+    assert model_summaries["model-a"]["legacy_overall_score"] == pytest.approx(1.0)
+    assert model_summaries["model-a"]["formatting_bias_cases"] == 0
     assert model_summaries["model-a"]["total_cost_usd"] == pytest.approx(0.002)
     assert model_summaries["model-a"]["dollars_per_1000_pages"] == pytest.approx(2.0)
     assert model_summaries["model-b"]["total_cost_usd"] == pytest.approx(0.003)
     assert model_summaries["model-b"]["dollars_per_1000_pages"] == pytest.approx(3.0)
     assert report["ranking"][0]["dollars_per_1000_pages"] == pytest.approx(2.0)
+    assert report["models"][0]["cases"][0]["score_audit"]["suspected_formatting_bias"] is False
 
     history_path = benchmark.get_default_database_path(out_dir=out_dir)
     assert history_path.exists()
+    assert "Benchmark progress: [  ] 0/2 pages completed" in output_lines
+    assert any(
+        line == "Progress [. ] 1/2 pages completed (model-a: case1)"
+        for line in output_lines
+    )
+    assert any(
+        line == "Progress [..] 2/2 pages completed (model-b: case1)"
+        for line in output_lines
+    )
 
     with sqlite3.connect(history_path) as connection:
         run_count = connection.execute("SELECT COUNT(*) FROM benchmark_runs").fetchone()[0]
