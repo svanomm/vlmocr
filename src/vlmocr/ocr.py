@@ -375,6 +375,12 @@ def _path_sort_key(path: Path, *, docs_dir: Path) -> str:
     return path.relative_to(docs_dir).as_posix().lower()
 
 
+def _is_regular_ocr_input(path: Path, *, docs_dir: Path) -> bool:
+    """Return whether a path should be considered by regular OCR discovery."""
+    relative_parts = path.relative_to(docs_dir).parts
+    return not relative_parts or relative_parts[0].lower() != "benchmark"
+
+
 def _resolve_output_names(paths: list[Path], *, docs_dir: Path) -> dict[Path, str]:
     """Resolve deterministic output names with extension suffixes for collisions."""
     by_stem: dict[str, list[Path]] = defaultdict(list)
@@ -419,7 +425,11 @@ def discover_ocr_documents(
 
     scan_iter = docs_dir.rglob("*") if recursive else docs_dir.glob("*")
     file_paths = sorted(
-        (path for path in scan_iter if path.is_file()),
+        (
+            path
+            for path in scan_iter
+            if path.is_file() and _is_regular_ocr_input(path, docs_dir=docs_dir)
+        ),
         key=lambda item: _path_sort_key(item, docs_dir=docs_dir),
     )
 

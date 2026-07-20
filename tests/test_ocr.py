@@ -562,6 +562,31 @@ def test_discover_ocr_documents_can_disable_recursion(tmp_path: Path) -> None:
     assert [document.path for document in top_level_docs] == [docs_dir / "top.pdf"]
 
 
+def test_discover_ocr_documents_ignores_benchmark_subfolder(tmp_path: Path) -> None:
+    """Regular OCR discovery should ignore seeded benchmark review documents."""
+    docs_dir = tmp_path / "docs"
+    benchmark_dir = docs_dir / "benchmark"
+    nested_dir = docs_dir / "nested"
+    benchmark_dir.mkdir(parents=True)
+    nested_dir.mkdir(parents=True)
+
+    (docs_dir / "top.pdf").write_bytes(b"")
+    (nested_dir / "keep.png").write_bytes(b"")
+    (benchmark_dir / "skip.pdf").write_bytes(b"")
+    (benchmark_dir / "skip.gif").write_bytes(b"")
+
+    discovered_docs, skipped_inputs = ocr_module.discover_ocr_documents(
+        docs_dir,
+        recursive=True,
+    )
+
+    assert [document.path for document in discovered_docs] == [
+        nested_dir / "keep.png",
+        docs_dir / "top.pdf",
+    ]
+    assert skipped_inputs == []
+
+
 def test_read_and_write_ocr_prompt_round_trip(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

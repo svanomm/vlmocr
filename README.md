@@ -162,6 +162,7 @@ uv run vlmocr benchmark-rescore-reports --out-dir converted
 - `manifest.json` with 10 fixed difficult cases (math/table/footnote/image-heavy)
 - `gold/*.json` one-page expected outputs for deterministic scoring
 - `docs/benchmark/*.pdf` one-page benchmark review PDFs (one file per selected case)
+- regular `vlmocr ocr` discovery ignores `docs/benchmark` so benchmark review PDFs stay out of normal conversions
 - automatic verification that each PDF in `docs/benchmark` has a matching gold JSON
 
 `benchmark` then:
