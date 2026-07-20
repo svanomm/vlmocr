@@ -17,6 +17,7 @@ def clean_text(text: str) -> str:
     Returns:
         Cleaned markdown text.
     """
+    text = text.replace("&nbsp;", " ")
     text = _TWO_PLUS_NEWLINES_RE.sub("\n\n", text)
     text = _TWO_PLUS_SPACES_RE.sub(" ", text)
     text = text.replace(f"{chr(34)} {chr(39)}", f"{chr(34)}{chr(34)}")

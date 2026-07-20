@@ -38,6 +38,8 @@ DEFAULT_VLM_TEMPERATURE = 0.0
 DEFAULT_OCR_MAX_TOKENS = int(os.environ.get("VLMOCR_MAX_TOKENS", "4096"))
 DEFAULT_OCR_MAX_WORKERS = int(os.environ.get("VLMOCR_MAX_WORKERS", "4"))
 DEFAULT_OCR_MAX_RETRIES = int(os.environ.get("VLMOCR_MAX_RETRIES", "3"))
+BLANK_PAGE_MAX_NONWHITE_RATIO = 0.001
+SHORT_OCR_WORD_COUNT_THRESHOLD = 25
 
 SUPPORTED_OCR_INPUT_EXTENSIONS = frozenset(
     {".pdf", ".jpg", ".jpeg", ".png", ".webp", ".bmp"}
@@ -53,6 +55,7 @@ OCR_PROMPTS_DIR = Path(__file__).with_name("prompts")
 OCR_PROMPT_PATH = OCR_PROMPTS_DIR / f"{DEFAULT_OCR_PROMPT_TEMPLATE}{PROMPT_TEMPLATE_EXTENSION}"
 
 _PROMPT_TEMPLATE_NAME_PATTERN = re.compile(r"[^a-z0-9]+")
+_WORD_PATTERN = re.compile(r"\S+")
 
 
 @dataclass(frozen=True)
@@ -548,6 +551,36 @@ def _validate_request_image_format(fmt: str) -> str:
     return normalized_format
 
 
+def _normalize_image_to_rgb(image: Image.Image) -> Image.Image:
+    oriented = ImageOps.exif_transpose(image)
+    if "A" not in oriented.getbands():
+        return oriented.convert("RGB")
+
+    rgba_image = oriented.convert("RGBA")
+    white_background = Image.new("RGBA", rgba_image.size, (255, 255, 255, 255))
+    white_background.alpha_composite(rgba_image)
+    return white_background.convert("RGB")
+
+
+def _count_markdown_words(markdown: str) -> int:
+    return len(_WORD_PATTERN.findall(markdown))
+
+
+def _is_blank_page_image(base64_image: str) -> bool:
+    image_bytes = base64.b64decode(base64_image)
+    with Image.open(io.BytesIO(image_bytes)) as image:
+        rgb_image = _normalize_image_to_rgb(image)
+        grayscale_histogram = rgb_image.convert("L").histogram()
+        total_pixels = rgb_image.width * rgb_image.height
+
+    if total_pixels == 0:
+        return True
+
+    white_pixels = grayscale_histogram[255]
+    nonwhite_ratio = (total_pixels - white_pixels) / total_pixels
+    return nonwhite_ratio < BLANK_PAGE_MAX_NONWHITE_RATIO
+
+
 def render_page_to_image(
     doc: fitz.Document,
     page_index: int,
@@ -587,8 +620,7 @@ def render_image_to_image(
     file_path = Path(file_path)
 
     with Image.open(file_path) as image:
-        oriented = ImageOps.exif_transpose(image)
-        rgb_image = oriented.convert("RGB")
+        rgb_image = _normalize_image_to_rgb(image)
         image_buffer = io.BytesIO()
         rgb_image.save(
             image_buffer,
@@ -795,7 +827,7 @@ def convert_file(
 
     Raises:
         ValueError: If max_workers is invalid.
-        RuntimeError: If OCR does not produce output for every page.
+        RuntimeError: If OCR does not produce output for every non-blank page.
     """
     if max_workers < 1:
         raise ValueError(f"max_workers must be >= 1, got {max_workers}")
@@ -814,12 +846,19 @@ def convert_file(
     page_images = render_document_to_images(file_path, dpi=dpi, fmt=fmt)
 
     page_markdowns: list[str | None] = [None] * len(page_images)
+    pages_to_ocr: list[int] = []
 
-    def _ocr_indexed(page_index: int) -> tuple[int, str]:
+    for page_index, page_image in enumerate(page_images):
+        if _is_blank_page_image(page_image):
+            page_markdowns[page_index] = ""
+            continue
+        pages_to_ocr.append(page_index)
+
+    def _ocr_page_once(page_index: int) -> str:
         last_exc: Exception | None = None
         for attempt in range(max_retries):
             try:
-                return page_index, _ocr_page(
+                return _ocr_page(
                     client,
                     page_images[page_index],
                     model=model,
@@ -836,11 +875,29 @@ def convert_file(
             f"Page {page_index} of '{output_name}' failed after {max_retries} attempts"
         ) from last_exc
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(_ocr_indexed, i): i for i in range(len(page_images))}
-        with tqdm(
-            total=len(page_images), desc=f"  OCR {output_name}", leave=False
-        ) as pbar:
+    def _ocr_indexed(page_index: int) -> tuple[int, str]:
+        first_markdown = _ocr_page_once(page_index)
+        first_word_count = _count_markdown_words(first_markdown)
+        if first_word_count > SHORT_OCR_WORD_COUNT_THRESHOLD:
+            return page_index, first_markdown
+
+        try:
+            second_markdown = _ocr_page_once(page_index)
+        except RuntimeError:
+            return page_index, first_markdown
+
+        second_word_count = _count_markdown_words(second_markdown)
+        if second_word_count >= first_word_count:
+            return page_index, second_markdown
+        return page_index, first_markdown
+
+    with tqdm(total=len(page_images), desc=f"  OCR {output_name}", leave=False) as pbar:
+        blank_page_count = len(page_images) - len(pages_to_ocr)
+        if blank_page_count:
+            pbar.update(blank_page_count)
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_ocr_indexed, i): i for i in pages_to_ocr}
             for future in as_completed(futures):
                 idx, markdown = future.result()
                 page_markdowns[idx] = markdown

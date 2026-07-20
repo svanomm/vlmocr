@@ -16,18 +16,36 @@ import vlmocr.ocr as ocr_module
 from vlmocr.ocr import create_client, get_pdf_info, render_page_to_image
 
 
-def _create_test_pdf(num_pages: int) -> str:
-    """Create a temporary PDF with the given number of pages."""
+def _create_test_pdf_with_page_contents(page_contents: list[str | None]) -> str:
+    """Create a temporary PDF whose pages are either dense text or blank."""
     fd, path = tempfile.mkstemp(suffix=".pdf")
     os.close(fd)
 
     doc = fitz.open()
-    for i in range(num_pages):
+    for index, page_text in enumerate(page_contents, start=1):
         page = doc.new_page()
-        page.insert_text((72, 72), f"Page {i + 1}")
+        if page_text is None:
+            continue
+
+        dense_text = "\n".join(
+            f"{page_text} sample line {line_number} for page {index}"
+            for line_number in range(1, 26)
+        )
+        page.insert_textbox(
+            fitz.Rect(72, 72, 540, 720),
+            dense_text,
+            fontsize=18,
+        )
     doc.save(path)
     doc.close()
     return path
+
+
+def _create_test_pdf(num_pages: int) -> str:
+    """Create a temporary PDF with the given number of non-blank pages."""
+    return _create_test_pdf_with_page_contents(
+        [f"Page {index + 1}" for index in range(num_pages)]
+    )
 
 
 def _create_test_image(path: Path, *, fmt: str = "PNG") -> None:
@@ -238,6 +256,165 @@ def test_convert_file_writes_raw_json_contract(
             {"index": 1, "markdown": "# Extracted page"},
         ]
     }
+
+
+def test_convert_file_skips_blank_pages_and_preserves_page_indexes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Blank pages should bypass OCR but remain in the output as empty markdown."""
+    path = _create_test_pdf_with_page_contents(["Page 1", None, "Page 3"])
+    ocr_calls: list[str] = []
+
+    def fake_ocr_page(
+        client,
+        base64_image,
+        model=None,
+        fmt=None,
+        prompt=None,
+        temperature=None,
+        max_tokens=None,
+    ) -> str:
+        ocr_calls.append(base64_image)
+        return " ".join(
+            [f"page{len(ocr_calls)}"] + [f"word{index}" for index in range(1, 27)]
+        )
+
+    monkeypatch.setattr(ocr_module, "_ocr_page", fake_ocr_page)
+
+    try:
+        output_path = ocr_module.convert_file(
+            client=object(),
+            file_path=path,
+            output_dir=tmp_path,
+            out_name="test",
+            max_workers=1,
+        )
+    finally:
+        os.unlink(path)
+
+    assert len(ocr_calls) == 2
+    assert json.loads(output_path.read_text(encoding="utf-8")) == {
+        "settings_hash": ocr_module.hash_ocr_settings(),
+        "pages": [
+            {
+                "index": 0,
+                "markdown": " ".join(["page1"] + [f"word{index}" for index in range(1, 27)]),
+            },
+            {"index": 1, "markdown": ""},
+            {
+                "index": 2,
+                "markdown": " ".join(["page2"] + [f"word{index}" for index in range(1, 27)]),
+            },
+        ],
+    }
+
+
+def test_convert_file_retries_short_ocr_and_accepts_second_with_same_word_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Short OCR output should be retried once and accept the second result on a tie."""
+    path = _create_test_pdf(1)
+    outputs = iter(["one two", "alpha beta"])
+
+    monkeypatch.setattr(
+        ocr_module,
+        "_ocr_page",
+        lambda client,
+        base64_image,
+        model=None,
+        fmt=None,
+        prompt=None,
+        temperature=None,
+        max_tokens=None: next(outputs),
+    )
+
+    try:
+        output_path = ocr_module.convert_file(
+            client=object(),
+            file_path=path,
+            output_dir=tmp_path,
+            out_name="test",
+            max_workers=1,
+        )
+    finally:
+        os.unlink(path)
+
+    assert json.loads(output_path.read_text(encoding="utf-8"))["pages"] == [
+        {"index": 0, "markdown": "alpha beta"}
+    ]
+
+
+def test_convert_file_retries_short_ocr_and_uses_second_when_it_has_more_words(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Short OCR output should prefer the retry when it contains more words."""
+    path = _create_test_pdf(1)
+    outputs = iter(["one two", "one two three"])
+
+    monkeypatch.setattr(
+        ocr_module,
+        "_ocr_page",
+        lambda client,
+        base64_image,
+        model=None,
+        fmt=None,
+        prompt=None,
+        temperature=None,
+        max_tokens=None: next(outputs),
+    )
+
+    try:
+        output_path = ocr_module.convert_file(
+            client=object(),
+            file_path=path,
+            output_dir=tmp_path,
+            out_name="test",
+            max_workers=1,
+        )
+    finally:
+        os.unlink(path)
+
+    assert json.loads(output_path.read_text(encoding="utf-8"))["pages"] == [
+        {"index": 0, "markdown": "one two three"}
+    ]
+
+
+def test_convert_file_does_not_retry_ocr_when_first_result_is_long_enough(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """OCR should not perform the extra quality retry for sufficiently long output."""
+    path = _create_test_pdf(1)
+    ocr_calls: list[str] = []
+
+    def fake_ocr_page(
+        client,
+        base64_image,
+        model=None,
+        fmt=None,
+        prompt=None,
+        temperature=None,
+        max_tokens=None,
+    ) -> str:
+        ocr_calls.append(base64_image)
+        return " ".join(f"word{index}" for index in range(26))
+
+    monkeypatch.setattr(ocr_module, "_ocr_page", fake_ocr_page)
+
+    try:
+        output_path = ocr_module.convert_file(
+            client=object(),
+            file_path=path,
+            output_dir=tmp_path,
+            out_name="test",
+            max_workers=1,
+        )
+    finally:
+        os.unlink(path)
+
+    assert len(ocr_calls) == 1
+    assert json.loads(output_path.read_text(encoding="utf-8"))["pages"] == [
+        {"index": 0, "markdown": " ".join(f"word{index}" for index in range(26))}
+    ]
 
 
 def test_convert_file_supports_image_input(
