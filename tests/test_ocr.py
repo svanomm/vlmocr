@@ -219,6 +219,59 @@ def test_extract_openrouter_usage_falls_back_to_prompt_plus_completion() -> None
     )
 
 
+def test_ocr_page_with_usage_routes_only_to_openai_provider() -> None:
+    """OCR requests should pin OpenRouter provider routing to OpenAI-only."""
+
+    captured_kwargs: dict[str, object] = {}
+
+    class FakeMessage:
+        content = "# Page 1"
+
+    class FakeChoice:
+        message = FakeMessage()
+
+    class FakeResponse:
+        choices = [FakeChoice()]
+        usage = {
+            "prompt_tokens": 12,
+            "completion_tokens": 6,
+            "total_tokens": 18,
+            "cost": 0.0009,
+        }
+
+    class FakeCompletions:
+        def create(self, **kwargs: object) -> FakeResponse:
+            captured_kwargs.update(kwargs)
+            return FakeResponse()
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeClient:
+        chat = FakeChat()
+
+    markdown, usage = ocr_module._ocr_page_with_usage(
+        FakeClient(),
+        "aGVsbG8=",
+        model="openai/gpt-5-mini",
+        fmt="png",
+        prompt="OCR this page.",
+        temperature=0.0,
+        max_tokens=256,
+    )
+
+    assert markdown == "# Page 1"
+    assert usage == ocr_module.OCRPageUsage(
+        prompt_tokens=12,
+        completion_tokens=6,
+        total_tokens=18,
+        cost=0.0009,
+    )
+    assert captured_kwargs["extra_body"] == {
+        "provider": ocr_module.OPENROUTER_PROVIDER_PREFERENCES
+    }
+
+
 def test_convert_file_writes_raw_json_contract(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

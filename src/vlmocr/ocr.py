@@ -30,8 +30,12 @@ from vlmocr.contract import (
 )
 
 DEFAULT_OCR_MODEL = os.environ.get(
-    "VLMOCR_MODEL", "google/gemini-3.1-flash-lite-preview"
+    "VLMOCR_MODEL", "openai/gpt-5.6-luna"
 )
+OPENROUTER_PROVIDER_PREFERENCES: dict[str, object] = {
+    "only": ["openai"],
+    "allow_fallbacks": False,
+}
 DEFAULT_OCR_DPI = int(os.environ.get("VLMOCR_DPI", "200"))
 DEFAULT_OCR_IMAGE_FORMAT = os.environ.get("VLMOCR_IMAGE_FORMAT", "png")
 DEFAULT_VLM_TEMPERATURE = 0.0
@@ -759,6 +763,7 @@ def _ocr_page_with_usage(
         ],
         temperature=temperature,
         max_tokens=max_tokens,
+        extra_body={"provider": OPENROUTER_PROVIDER_PREFERENCES},
     )
     markdown = response.choices[0].message.content or ""
     usage = _extract_openrouter_usage(response)
@@ -853,16 +858,45 @@ def convert_file(
         temperature=temperature,
         max_tokens=max_tokens,
     )
-    page_images = render_document_to_images(file_path, dpi=dpi, fmt=fmt)
+
+    extension = file_path.suffix.lower()
+    if extension == ".pdf":
+        with fitz.open(file_path) as doc:
+            page_images: list[str] = []
+            with tqdm(
+                total=len(doc),
+                desc=f"  Render {output_name}",
+                leave=False,
+            ) as render_pbar:
+                for page_index in range(len(doc)):
+                    page_images.append(
+                        render_page_to_image(doc, page_index, dpi=dpi, fmt=fmt)
+                    )
+                    render_pbar.update(1)
+    else:
+        page_images = render_document_to_images(file_path, dpi=dpi, fmt=fmt)
+        with tqdm(
+            total=len(page_images),
+            desc=f"  Render {output_name}",
+            leave=False,
+        ) as render_pbar:
+            render_pbar.update(len(page_images))
 
     page_markdowns: list[str | None] = [None] * len(page_images)
     pages_to_ocr: list[int] = []
 
-    for page_index, page_image in enumerate(page_images):
-        if _is_blank_page_image(page_image):
-            page_markdowns[page_index] = ""
-            continue
-        pages_to_ocr.append(page_index)
+    with tqdm(
+        total=len(page_images),
+        desc=f"  Pre-scan {output_name}",
+        leave=False,
+    ) as prescan_pbar:
+        for page_index, page_image in enumerate(page_images):
+            if _is_blank_page_image(page_image):
+                page_markdowns[page_index] = ""
+                prescan_pbar.update(1)
+                continue
+            pages_to_ocr.append(page_index)
+            prescan_pbar.update(1)
 
     def _ocr_page_once(page_index: int) -> str:
         last_exc: Exception | None = None

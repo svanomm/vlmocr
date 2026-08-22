@@ -841,7 +841,7 @@ def test_launch_tui_benchmark_requires_model_slug(
 
     assert prompts == [
         "Select an option [1-8]: ",
-        "Model slug(s) (required, e.g. openai/gpt-4.1-mini;google/gemini-3.1-flash-lite-preview): ",
+        "Model slug(s) (required, e.g. openai/gpt-4.1-mini;openai/gpt-5-mini): ",
         "Proceed with benchmark now [y/N]: ",
         "Press Enter to return to the menu...",
         "Select an option [1-8]: ",
@@ -870,7 +870,7 @@ def test_launch_tui_benchmark_accepts_semicolon_delimited_models(
     responses = iter(
         [
             "7",
-            "openai/gpt-4.1-mini; google/gemini-3.1-flash-lite-preview",
+            "openai/gpt-4.1-mini; openai/gpt-5-mini",
             "y",
             "",
             "8",
@@ -903,10 +903,10 @@ def test_launch_tui_benchmark_accepts_semicolon_delimited_models(
 
     assert captured["models"] == [
         "openai/gpt-4.1-mini",
-        "google/gemini-3.1-flash-lite-preview",
+        "openai/gpt-5-mini",
     ]
     assert (
-        "Benchmark will run all cases for models: openai/gpt-4.1-mini, google/gemini-3.1-flash-lite-preview"
+        "Benchmark will run all cases for models: openai/gpt-4.1-mini, openai/gpt-5-mini"
         in "\n".join(output_lines)
     )
 

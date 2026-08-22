@@ -6,7 +6,7 @@
 
 Traditional OCR struggles with mixed layout pages (tables, footnotes, figures, multicolumn text, math). VLMs are much better at preserving structure and meaning across the whole page, or can transform page content into structured formats.
 
-The default OCR model is Gemini 3.1 Flash Lite via OpenRouter for strong quality-cost tradeoffs, but you can use any VLM served by OpenRouter.
+The default OCR model is an OpenAI model via OpenRouter. OCR requests are routed only to OpenAI providers (`provider.only=["openai"]`, with fallbacks disabled).
 
 ## Pipeline overview
 
@@ -143,13 +143,13 @@ uv run vlmocr estimate-cost --docs-dir docs --no-recursive
 uv run vlmocr benchmark-init-academic --docs-dir docs --out-dir converted
 
 # Run benchmark for one model
-uv run vlmocr benchmark --out-dir converted --model google/gemini-3.1-flash-lite-preview
+uv run vlmocr benchmark --out-dir converted --model openai/gpt-4.1-mini
 
 # Compare multiple models in one run
-uv run vlmocr benchmark --out-dir converted --model google/gemini-3.1-flash-lite-preview --model openai/gpt-4.1-mini
+uv run vlmocr benchmark --out-dir converted --model openai/gpt-4.1-mini --model openai/gpt-5-mini
 
 # Or pass multiple models in one flag with semicolons
-uv run vlmocr benchmark --out-dir converted --model "google/gemini-3.1-flash-lite-preview;openai/gpt-4.1-mini"
+uv run vlmocr benchmark --out-dir converted --model "openai/gpt-4.1-mini;openai/gpt-5-mini"
 
 # Rescore saved benchmark reports offline after scoring logic changes
 uv run vlmocr benchmark-rescore-reports --out-dir converted

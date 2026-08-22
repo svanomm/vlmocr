@@ -617,7 +617,7 @@ def _friendly_error_message(args: argparse.Namespace, exc: Exception) -> str:
                 (
                     "Benchmark requires an explicit model slug. "
                     "Example: `vlmocr benchmark --model openai/gpt-4.1-mini` "
-                    "or `vlmocr benchmark --model openai/gpt-4.1-mini;google/gemini-3.1-flash-lite-preview`"
+                    "or `vlmocr benchmark --model openai/gpt-4.1-mini;openai/gpt-5-mini`"
                 ),
                 (
                     "If this is your first benchmark run, initialize local benchmark data with "
@@ -1105,14 +1105,14 @@ def _print_recent_benchmark_results(
     )
     recent = benchmark.get_recent_benchmark_results(
         database_path=resolved_database,
-        limit=10,
+        limit=20,
     )
 
     if not recent:
         output_fn(f"No benchmark history found in {resolved_database}.")
         return
 
-    output_fn("Most recent benchmark results (latest 10 model summaries):")
+    output_fn("Most recent benchmark results (latest 20 model summaries):")
     rows: list[tuple[str, ...]] = []
     for row in recent:
         completed_at = str(row["completed_at"] or "-")
@@ -1172,7 +1172,7 @@ def _run_interactive_benchmark(
 
     model_input = _prompt_text(
         input_fn,
-        "Model slug(s) (required, e.g. openai/gpt-4.1-mini;google/gemini-3.1-flash-lite-preview)",
+        "Model slug(s) (required, e.g. openai/gpt-4.1-mini;openai/gpt-5-mini)",
         default="",
     )
     models = _parse_benchmark_models([model_input])
